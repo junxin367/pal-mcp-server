@@ -173,9 +173,14 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
         # Create contents structure
         contents = [{"parts": parts}]
 
-        # Gemini 3 Pro Preview currently rejects medium thinking budgets; bump to high.
+        # Earlier Gemini 3 Pro Preview rejected medium thinking budgets; keep the
+        # guard scoped to current Pro preview aliases in case the limitation recurs.
         effective_thinking_mode = thinking_mode
-        if resolved_model_name == "gemini-3-pro-preview" and thinking_mode == "medium":
+        if (
+            resolved_model_name.startswith("gemini-3")
+            and "pro-preview" in resolved_model_name
+            and thinking_mode == "medium"
+        ):
             logger.debug(
                 "Overriding thinking mode 'medium' with 'high' for %s due to launch limitation",
                 resolved_model_name,

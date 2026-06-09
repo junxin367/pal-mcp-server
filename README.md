@@ -4,6 +4,8 @@
 
   <em>Your AI's PAL – a Provider Abstraction Layer</em><br />
   <sub><a href="docs/name-change.md">Formerly known as Zen MCP</a></sub>
+  <br />
+  <sub><a href="README.zh-CN.md">简体中文</a> · English</sub>
 
   [PAL in action](https://github.com/user-attachments/assets/0d26061e-5f21-4ab1-b7d0-f883ddc2c3da)
 

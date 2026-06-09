@@ -45,35 +45,22 @@ class TestDIALProvider:
         """Test model name validation."""
         provider = DIALModelProvider("test-key")
 
-        # Test valid models
-        assert provider.validate_model_name("o3-2025-04-16") is True
-        assert provider.validate_model_name("o3") is True  # Shorthand
-        assert provider.validate_model_name("anthropic.claude-opus-4.1-20250805-v1:0") is True
-        assert provider.validate_model_name("opus-4.1") is True  # Shorthand
-        assert provider.validate_model_name("gemini-2.5-pro-preview-05-06") is True
-        assert provider.validate_model_name("gemini-2.5-pro") is True  # Shorthand
-
-        # Test invalid model
+        # O-series deployments are no longer exposed in the default plan catalogue.
+        assert provider.validate_model_name("o3-2025-04-16") is False
+        assert provider.validate_model_name("o3") is False
+        assert provider.validate_model_name("o4-mini-2025-04-16") is False
+        assert provider.validate_model_name("o4-mini") is False
         assert provider.validate_model_name("invalid-model") is False
 
     def test_resolve_model_name(self):
         """Test model name resolution for shorthands."""
         provider = DIALModelProvider("test-key")
 
-        # Test shorthand resolution
-        assert provider._resolve_model_name("o3") == "o3-2025-04-16"
-        assert provider._resolve_model_name("o4-mini") == "o4-mini-2025-04-16"
-        assert provider._resolve_model_name("opus-4.1") == "anthropic.claude-opus-4.1-20250805-v1:0"
-        assert provider._resolve_model_name("sonnet-4.1") == "anthropic.claude-sonnet-4.1-20250805-v1:0"
-        assert provider._resolve_model_name("gemini-2.5-pro") == "gemini-2.5-pro-preview-05-06"
-        assert provider._resolve_model_name("gemini-2.5-flash") == "gemini-2.5-flash-preview-05-20"
-
-        # Test full name passthrough
+        # Removed default models pass through unchanged because no catalogue alias exists.
+        assert provider._resolve_model_name("o3") == "o3"
+        assert provider._resolve_model_name("o4-mini") == "o4-mini"
         assert provider._resolve_model_name("o3-2025-04-16") == "o3-2025-04-16"
-        assert (
-            provider._resolve_model_name("anthropic.claude-opus-4.1-20250805-v1:0")
-            == "anthropic.claude-opus-4.1-20250805-v1:0"
-        )
+        assert provider._resolve_model_name("o4-mini-2025-04-16") == "o4-mini-2025-04-16"
 
     @patch.dict(os.environ, {"DIAL_ALLOWED_MODELS": ""}, clear=False)
     @patch("utils.model_restrictions._restriction_service", None)
@@ -81,41 +68,9 @@ class TestDIALProvider:
         """Test getting model capabilities."""
         provider = DIALModelProvider("test-key")
 
-        # Test O3 capabilities
-        capabilities = provider.get_capabilities("o3")
-        assert capabilities.model_name == "o3-2025-04-16"
-        assert capabilities.friendly_name == "DIAL (O3)"
-        assert capabilities.context_window == 200_000
-        assert capabilities.provider == ProviderType.DIAL
-        assert capabilities.supports_images is True
-        assert capabilities.supports_extended_thinking is False
-
-        # Test Claude 4.1 capabilities
-        capabilities = provider.get_capabilities("opus-4.1")
-        assert capabilities.model_name == "anthropic.claude-opus-4.1-20250805-v1:0"
-        assert capabilities.context_window == 200_000
-        assert capabilities.supports_images is True
-        assert capabilities.supports_extended_thinking is False
-        assert capabilities.supports_temperature is False
-
-        # Test Claude 4.1 with thinking mode
-        capabilities = provider.get_capabilities("opus-4.1-thinking")
-        assert capabilities.model_name == "anthropic.claude-opus-4.1-20250805-v1:0-with-thinking"
-        assert capabilities.context_window == 200_000
-        assert capabilities.supports_images is True
-        assert capabilities.supports_extended_thinking is True
-        assert capabilities.supports_temperature is False
-
-        # Test Gemini capabilities
-        capabilities = provider.get_capabilities("gemini-2.5-pro")
-        assert capabilities.model_name == "gemini-2.5-pro-preview-05-06"
-        assert capabilities.context_window == 1_000_000
-        assert capabilities.supports_images is True
-
-        # Test temperature constraint
-        assert capabilities.temperature_constraint.min_temp == 0.0
-        assert capabilities.temperature_constraint.max_temp == 2.0
-        assert capabilities.temperature_constraint.default_temp == 0.3
+        assert provider.MODEL_CAPABILITIES == {}
+        with pytest.raises(ValueError, match="Unsupported model 'o3' for provider dial"):
+            provider.get_capabilities("o3")
 
     @patch.dict(os.environ, {"DIAL_ALLOWED_MODELS": ""}, clear=False)
     @patch("utils.model_restrictions._restriction_service", None)
@@ -136,7 +91,7 @@ class TestDIALProvider:
         mock_service.is_allowed.return_value = False
         mock_get_restriction.return_value = mock_service
 
-        with pytest.raises(ValueError, match="not allowed by restriction policy"):
+        with pytest.raises(ValueError, match="Unsupported model 'o3' for provider dial"):
             provider.get_capabilities("o3")
 
     @patch.dict(os.environ, {"DIAL_ALLOWED_MODELS": ""}, clear=False)
@@ -145,75 +100,22 @@ class TestDIALProvider:
         """Test vision support detection through model capabilities."""
         provider = DIALModelProvider("test-key")
 
-        assert provider.get_capabilities("o3-2025-04-16").supports_images is True
-        assert provider.get_capabilities("o3").supports_images is True  # Via resolution
-        assert provider.get_capabilities("anthropic.claude-opus-4.1-20250805-v1:0").supports_images is True
-        assert provider.get_capabilities("gemini-2.5-pro-preview-05-06").supports_images is True
-
         with pytest.raises(ValueError):
-            provider.get_capabilities("unknown-model")
+            provider.get_capabilities("o3")
 
     @patch("openai.OpenAI")  # Mock the OpenAI class directly from openai module
-    def test_generate_content_with_alias(self, mock_openai_class):
-        """Test that generate_content properly resolves aliases and uses deployment routing."""
-        # Create mock client
+    def test_generate_content_rejects_removed_default_model(self, mock_openai_class):
+        """Removed DIAL catalogue models are rejected before deployment routing."""
         mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content="Test response"))]
-        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20, total_tokens=30)
-        mock_response.model = "gpt-4"
-        mock_response.id = "test-id"
-        mock_response.created = 1234567890
-        mock_response.choices[0].finish_reason = "stop"
-
-        mock_client.chat.completions.create.return_value = mock_response
         mock_openai_class.return_value = mock_client
 
         provider = DIALModelProvider("test-key")
 
-        # Generate content with shorthand
-        response = provider.generate_content(prompt="Test prompt", model_name="o3", temperature=0.7)  # Shorthand
+        with pytest.raises(ValueError, match="Model 'o3' not in allowed models list"):
+            provider.generate_content(prompt="Test prompt", model_name="o3", temperature=0.7)
 
-        # Verify OpenAI was instantiated with deployment-specific URL
-        mock_openai_class.assert_called_once()
-        call_args = mock_openai_class.call_args
-        assert "/deployments/o3-2025-04-16" in call_args[1]["base_url"]
+        mock_client.chat.completions.create.assert_not_called()
 
-        # Verify the resolved model name was passed to the API
-        mock_client.chat.completions.create.assert_called_once()
-        create_call_args = mock_client.chat.completions.create.call_args
-        assert create_call_args[1]["model"] == "o3-2025-04-16"  # Resolved name
-        assert "temperature" not in create_call_args[1]
-
-        # Verify response
-        assert response.content == "Test response"
-        assert response.model_name == "o3"  # Original name preserved
-        assert response.metadata["model"] == "gpt-4"  # API returned model name from mock
-
-    @patch("openai.OpenAI")
-    def test_generate_content_omits_temperature_for_dial_claude(self, mock_openai_class):
-        """Test that DIAL Claude deployments don't send unsupported temperature."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content="Test response"))]
-        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20, total_tokens=30)
-        mock_response.model = "claude"
-        mock_response.id = "test-id"
-        mock_response.created = 1234567890
-        mock_response.choices[0].finish_reason = "stop"
-
-        mock_client.chat.completions.create.return_value = mock_response
-        mock_openai_class.return_value = mock_client
-
-        provider = DIALModelProvider("test-key")
-
-        response = provider.generate_content(prompt="Test prompt", model_name="opus-4.1", temperature=0.7)
-
-        mock_client.chat.completions.create.assert_called_once()
-        create_call_args = mock_client.chat.completions.create.call_args[1]
-        assert create_call_args["model"] == "anthropic.claude-opus-4.1-20250805-v1:0"
-        assert "temperature" not in create_call_args
-        assert response.content == "Test response"
 
     def test_provider_type(self):
         """Test provider type identification."""
@@ -246,22 +148,16 @@ class TestDIALProvider:
             # Check that Api-Key header is set
             assert provider.DEFAULT_HEADERS["Api-Key"] == "test-key"
 
-    @patch.dict(os.environ, {"DIAL_ALLOWED_MODELS": "o3-2025-04-16,anthropic.claude-opus-4.1-20250805-v1:0"})
+    @patch.dict(os.environ, {"DIAL_ALLOWED_MODELS": "o3-2025-04-16"})
     @patch("utils.model_restrictions._restriction_service", None)
     def test_allowed_models_restriction(self):
-        """Test model allow-list functionality."""
+        """Allow-list entries cannot re-enable removed default catalogue models."""
         provider = DIALModelProvider("test-key")
 
-        # These should be allowed
-        assert provider.validate_model_name("o3-2025-04-16") is True
-        assert provider.validate_model_name("o3") is True  # Alias for o3-2025-04-16
-        assert provider.validate_model_name("anthropic.claude-opus-4.1-20250805-v1:0") is True
-        assert provider.validate_model_name("opus-4.1") is True  # Resolves to anthropic.claude-opus-4.1-20250805-v1:0
-
-        # These should be blocked
-        assert provider.validate_model_name("gemini-2.5-pro-preview-05-06") is False
+        assert provider.validate_model_name("o3-2025-04-16") is False
+        assert provider.validate_model_name("o3") is False
         assert provider.validate_model_name("o4-mini-2025-04-16") is False
-        assert provider.validate_model_name("sonnet-4.1") is False  # sonnet-4.1 is not in allowed list
+        assert provider.validate_model_name("o4-mini") is False
 
     @patch("httpx.Client")
     @patch("openai.OpenAI")

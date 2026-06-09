@@ -58,10 +58,10 @@ class TestOpenRouterProvider:
         provider = OpenRouterProvider(api_key="test-key")
 
         # Test with a model in the registry (using alias)
-        caps = provider.get_capabilities("o3")
+        caps = provider.get_capabilities("opus")
         assert caps.provider == ProviderType.OPENROUTER
-        assert caps.model_name == "openai/o3"  # Resolved name
-        assert caps.friendly_name == "OpenRouter (openai/o3)"
+        assert caps.model_name == "anthropic/claude-opus-4.8"  # Resolved name
+        assert caps.friendly_name == "OpenRouter (anthropic/claude-opus-4.8)"
 
         # Test with a model not in registry - should raise error
         with pytest.raises(ValueError, match="Unsupported model 'unknown-model' for provider openrouter"):
@@ -79,33 +79,32 @@ class TestOpenRouterProvider:
         provider = OpenRouterProvider(api_key="test-key")
 
         # Test alias resolution
-        assert provider._resolve_model_name("opus") == "anthropic/claude-opus-4.5"
-        assert provider._resolve_model_name("opus4.5") == "anthropic/claude-opus-4.5"
-        assert provider._resolve_model_name("opus4.1") == "anthropic/claude-opus-4.1"
-        assert provider._resolve_model_name("sonnet") == "anthropic/claude-sonnet-4.5"
-        assert provider._resolve_model_name("sonnet4.1") == "anthropic/claude-sonnet-4.1"
-        assert provider._resolve_model_name("o3") == "openai/o3"
-        assert provider._resolve_model_name("o3-mini") == "openai/o3-mini"
-        assert provider._resolve_model_name("o3mini") == "openai/o3-mini"
-        assert provider._resolve_model_name("o4-mini") == "openai/o4-mini"
-        assert provider._resolve_model_name("o4-mini") == "openai/o4-mini"
-        assert provider._resolve_model_name("haiku") == "anthropic/claude-3.5-haiku"
-        assert provider._resolve_model_name("mistral") == "mistralai/mistral-large-2411"
-        assert provider._resolve_model_name("grok-4") == "x-ai/grok-4"
-        assert provider._resolve_model_name("grok4") == "x-ai/grok-4"
-        assert provider._resolve_model_name("grok") == "x-ai/grok-4"
-        assert provider._resolve_model_name("deepseek") == "deepseek/deepseek-r1-0528"
-        assert provider._resolve_model_name("r1") == "deepseek/deepseek-r1-0528"
+        assert provider._resolve_model_name("opus") == "anthropic/claude-opus-4.8"
+        assert provider._resolve_model_name("opus4.5") == "anthropic/claude-opus-4.8"
+        assert provider._resolve_model_name("opus4.1") == "anthropic/claude-opus-4.8"
+        assert provider._resolve_model_name("sonnet") == "anthropic/claude-sonnet-4.6"
+        assert provider._resolve_model_name("sonnet4.1") == "anthropic/claude-sonnet-4.6"
+        assert provider._resolve_model_name("haiku") == "anthropic/claude-haiku-4.5"
+        assert provider._resolve_model_name("mistral") == "mistralai/mistral-large-2512"
+        assert provider._resolve_model_name("grok-4") == "x-ai/grok-4.3"
+        assert provider._resolve_model_name("grok4") == "x-ai/grok-4.3"
+        assert provider._resolve_model_name("grok") == "x-ai/grok-4.3"
+        assert provider._resolve_model_name("deepseek") == "deepseek/deepseek-v4-pro"
+        assert provider._resolve_model_name("r1") == "deepseek/deepseek-v4-pro"
 
         # Test case-insensitive
-        assert provider._resolve_model_name("OPUS") == "anthropic/claude-opus-4.5"
-        assert provider._resolve_model_name("SONNET") == "anthropic/claude-sonnet-4.5"
-        assert provider._resolve_model_name("O3") == "openai/o3"
-        assert provider._resolve_model_name("Mistral") == "mistralai/mistral-large-2411"
+        assert provider._resolve_model_name("OPUS") == "anthropic/claude-opus-4.8"
+        assert provider._resolve_model_name("SONNET") == "anthropic/claude-sonnet-4.6"
+        assert provider._resolve_model_name("Mistral") == "mistralai/mistral-large-2512"
 
         # Test direct model names (should pass through unchanged)
-        assert provider._resolve_model_name("anthropic/claude-opus-4.1") == "anthropic/claude-opus-4.1"
+        assert provider._resolve_model_name("anthropic/claude-opus-4.8") == "anthropic/claude-opus-4.8"
         assert provider._resolve_model_name("openai/o3") == "openai/o3"
+        assert provider._resolve_model_name("o3") == "o3"
+        assert provider._resolve_model_name("o3-mini") == "o3-mini"
+        assert provider._resolve_model_name("o3mini") == "o3mini"
+        assert provider._resolve_model_name("o4-mini") == "o4-mini"
+        assert provider._resolve_model_name("o4mini") == "o4mini"
 
         # Test unknown models pass through
         assert provider._resolve_model_name("unknown-model") == "unknown-model"
@@ -167,10 +166,10 @@ class TestOpenRouterAutoMode:
         model_names = [
             "google/gemini-2.5-flash",
             "google/gemini-2.5-pro",
-            "openai/o3",
-            "openai/o3-mini",
-            "anthropic/claude-opus-4.1",
-            "anthropic/claude-sonnet-4.1",
+            "openai/gpt-5.5",
+            "openai/gpt-5.4-mini",
+            "anthropic/claude-opus-4.8",
+            "anthropic/claude-sonnet-4.6",
         ]
         mock_registry.list_models.return_value = model_names
 
@@ -207,7 +206,7 @@ class TestOpenRouterAutoMode:
         os.environ.pop("OPENAI_API_KEY", None)
         os.environ["OPENROUTER_API_KEY"] = "test-openrouter-key"
         os.environ.pop("OPENROUTER_ALLOWED_MODELS", None)
-        os.environ["OPENROUTER_ALLOWED_MODELS"] = "anthropic/claude-opus-4.1,google/gemini-2.5-flash"
+        os.environ["OPENROUTER_ALLOWED_MODELS"] = "anthropic/claude-opus-4.8,google/gemini-2.5-flash"
         os.environ["DEFAULT_MODEL"] = "auto"
 
         # Force reload to pick up new environment variable
@@ -219,8 +218,8 @@ class TestOpenRouterAutoMode:
         mock_models = [
             "google/gemini-2.5-flash",
             "google/gemini-2.5-pro",
-            "anthropic/claude-opus-4.1",
-            "anthropic/claude-sonnet-4.1",
+            "anthropic/claude-opus-4.8",
+            "anthropic/claude-sonnet-4.6",
         ]
         mock_registry.list_models.return_value = mock_models
 
@@ -239,7 +238,7 @@ class TestOpenRouterAutoMode:
 
         assert len(available_models) > 0, "Should have some allowed models"
 
-        expected_allowed = {"google/gemini-2.5-flash", "anthropic/claude-opus-4.1"}
+        expected_allowed = {"google/gemini-2.5-flash", "anthropic/claude-opus-4.8"}
 
         assert (
             set(available_models.keys()) == expected_allowed
@@ -291,14 +290,14 @@ class TestOpenRouterRegistry:
         # Should have loaded models
         models = registry.list_models()
         assert len(models) > 0
-        assert "anthropic/claude-opus-4.1" in models
-        assert "openai/o3" in models
+        assert "anthropic/claude-opus-4.8" in models
+        assert "openai/gpt-5.5" in models
 
         # Should have loaded aliases
         aliases = registry.list_aliases()
         assert len(aliases) > 0
         assert "opus" in aliases
-        assert "o3" in aliases
+        assert "gpt5" in aliases
         assert "sonnet" in aliases
 
     def test_registry_capabilities(self):
@@ -307,31 +306,26 @@ class TestOpenRouterRegistry:
 
         registry = OpenRouterModelRegistry()
 
-        # Test known model (opus alias now points to 4.5)
+        # Test known model (opus alias now points to 4.8)
         caps = registry.get_capabilities("opus")
         assert caps is not None
-        assert caps.model_name == "anthropic/claude-opus-4.5"
-        assert caps.context_window == 200000  # Claude's context window
+        assert caps.model_name == "anthropic/claude-opus-4.8"
+        assert caps.context_window == 1000000  # Claude's current context window
 
-        # Test using full model name for 4.5
-        caps = registry.get_capabilities("anthropic/claude-opus-4.5")
+        # Test using full model name for 4.8
+        caps = registry.get_capabilities("anthropic/claude-opus-4.8")
         assert caps is not None
-        assert caps.model_name == "anthropic/claude-opus-4.5"
+        assert caps.model_name == "anthropic/claude-opus-4.8"
 
-        # Test opus4.5 alias
+        # Test opus4.5 migration alias
         caps = registry.get_capabilities("opus4.5")
         assert caps is not None
-        assert caps.model_name == "anthropic/claude-opus-4.5"
+        assert caps.model_name == "anthropic/claude-opus-4.8"
 
-        # Test using full model name for 4.1
-        caps = registry.get_capabilities("anthropic/claude-opus-4.1")
-        assert caps is not None
-        assert caps.model_name == "anthropic/claude-opus-4.1"
-
-        # Test opus4.1 alias still works
+        # Test opus4.1 migration alias still works
         caps = registry.get_capabilities("opus4.1")
         assert caps is not None
-        assert caps.model_name == "anthropic/claude-opus-4.1"
+        assert caps.model_name == "anthropic/claude-opus-4.8"
 
         # Test unknown model
         caps = registry.get_capabilities("non-existent-model")
@@ -343,17 +337,17 @@ class TestOpenRouterRegistry:
 
         registry = OpenRouterModelRegistry()
 
-        # All these should resolve to Claude Sonnet 4.5
+        # All these should resolve to Claude Sonnet 4.6
         sonnet_45_aliases = ["sonnet", "sonnet4.5"]
         for alias in sonnet_45_aliases:
             config = registry.resolve(alias)
             assert config is not None
-            assert config.model_name == "anthropic/claude-sonnet-4.5"
+            assert config.model_name == "anthropic/claude-sonnet-4.6"
 
-        # Test Sonnet 4.1 alias
+        # Test Sonnet 4.1 migration alias
         config = registry.resolve("sonnet4.1")
         assert config is not None
-        assert config.model_name == "anthropic/claude-sonnet-4.1"
+        assert config.model_name == "anthropic/claude-sonnet-4.6"
 
 
 class TestOpenRouterFunctionality:

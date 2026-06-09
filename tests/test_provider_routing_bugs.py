@@ -94,7 +94,7 @@ class TestProviderRoutingBugs:
             )
 
             # Test common aliases that should all route to OpenRouter
-            test_models = ["flash", "pro", "o3", "o3-mini", "o4-mini"]
+            test_models = ["flash", "pro", "gpt5", "mini"]
             for model_name in test_models:
                 provider = tool.get_model_provider(model_name)
                 assert provider is not None, f"Should find provider for '{model_name}'"
@@ -147,9 +147,9 @@ class TestProviderRoutingBugs:
             with pytest.raises(ValueError, match="Model 'flash' is not available"):
                 tool.get_model_provider("flash")
 
-            # Test: Request 'o3' model with no API keys - should fail gracefully
-            with pytest.raises(ValueError, match="Model 'o3' is not available"):
-                tool.get_model_provider("o3")
+            # Test: Request OpenAI alias with no API keys - should fail gracefully
+            with pytest.raises(ValueError, match="Model 'gpt5' is not available"):
+                tool.get_model_provider("gpt5")
 
             # Verify no providers were auto-registered
             registry = ModelProviderRegistry()
@@ -206,10 +206,10 @@ class TestProviderRoutingBugs:
             ), "When both Google and OpenRouter API keys are available, 'flash' should prefer Google provider"
 
             # OpenAI models should use OpenAI provider
-            o3_provider = tool.get_model_provider("o3")
+            openai_provider = tool.get_model_provider("gpt5")
             assert (
-                o3_provider.get_provider_type() == ProviderType.OPENAI
-            ), "When both OpenAI and OpenRouter API keys are available, 'o3' should prefer OpenAI provider"
+                openai_provider.get_provider_type() == ProviderType.OPENAI
+            ), "When both OpenAI and OpenRouter API keys are available, 'gpt5' should prefer OpenAI provider"
 
         finally:
             # Restore original environment
@@ -248,8 +248,8 @@ class TestOpenRouterAliasRestrictions:
         CRITICAL BUG TEST: Reproduce the bug where OpenRouter restrictions with aliases
         resulted in "no models available" error.
 
-        Bug scenario: OPENROUTER_ALLOWED_MODELS=o3-mini,pro,flash,o4-mini,o3
-        Expected: 5 models available (aliases resolve to full names)
+        Bug scenario: OPENROUTER_ALLOWED_MODELS=mini,pro,flash,gpt5,gpt5mini
+        Expected: models available (aliases resolve to full names)
         Bug: 0 models available due to alias resolution failure
         """
         # Save original environment
@@ -269,7 +269,7 @@ class TestOpenRouterAliasRestrictions:
             os.environ.pop("OPENAI_API_KEY", None)
             os.environ.pop("XAI_API_KEY", None)
             os.environ["OPENROUTER_API_KEY"] = "test-key"
-            os.environ["OPENROUTER_ALLOWED_MODELS"] = "o3-mini,pro,gpt4.1,flash,o4-mini,o3"  # User's exact config
+            os.environ["OPENROUTER_ALLOWED_MODELS"] = "mini,pro,flash,gpt5,gpt5mini"
 
             # Register OpenRouter provider
             from providers.openrouter import OpenRouterProvider
@@ -281,25 +281,23 @@ class TestOpenRouterAliasRestrictions:
 
             # ASSERTION: Should have models available, not 0
             assert len(available_models) > 0, (
-                f"Expected models available with alias restrictions 'o3-mini,pro,gpt4.1,flash,o4-mini,o3', "
+                f"Expected models available with alias restrictions 'mini,pro,flash,gpt5,gpt5mini', "
                 f"but got {len(available_models)} models. Available: {list(available_models.keys())}"
             )
 
             # Expected aliases that should resolve to models:
-            # o3-mini -> openai/o3-mini
-            # pro -> google/gemini-2.5-pro
-            # flash -> google/gemini-2.5-flash
-            # o4-mini -> openai/o4-mini
-            # o3 -> openai/o3
-            # gpt4.1 -> should not exist (expected to be filtered out)
+            # mini/gpt5mini -> openai/gpt-5.4-mini
+            # gpt5 -> openai/gpt-5.5
+            # pro -> google/gemini-3.1-pro-preview
+            # flash -> google/gemini-3.5-flash
 
-            expected_models = {"o3-mini", "pro", "flash", "o4-mini", "o3"}
+            expected_models = {"mini", "gpt5mini", "gpt5", "pro", "flash"}
 
             available_model_names = set(available_models.keys())
 
-            # Should have at least the resolvable aliases (5 out of 6)
-            assert len(available_model_names) >= 5, (
-                f"Expected at least 5 models from alias restrictions, got {len(available_model_names)}: "
+            # Should have at least the resolvable aliases
+            assert len(available_model_names) >= len(expected_models), (
+                f"Expected at least {len(expected_models)} models from alias restrictions, got {len(available_model_names)}: "
                 f"{available_model_names}"
             )
 
@@ -338,7 +336,7 @@ class TestOpenRouterAliasRestrictions:
             os.environ.pop("OPENAI_API_KEY", None)
             os.environ.pop("XAI_API_KEY", None)
             os.environ["OPENROUTER_API_KEY"] = "test-key"
-            os.environ["OPENROUTER_ALLOWED_MODELS"] = "o3-mini,anthropic/claude-opus-4.1,flash"
+            os.environ["OPENROUTER_ALLOWED_MODELS"] = "mini,anthropic/claude-opus-4.8,flash"
 
             # Register OpenRouter provider
             from providers.openrouter import OpenRouterProvider
@@ -349,11 +347,11 @@ class TestOpenRouterAliasRestrictions:
             available_models = ModelProviderRegistry.get_available_models(respect_restrictions=True)
 
             expected_models = {
-                "o3-mini",  # alias
-                "openai/o3-mini",  # canonical
-                "anthropic/claude-opus-4.1",  # full name
+                "mini",  # alias
+                "openai/gpt-5.4-mini",  # canonical
+                "anthropic/claude-opus-4.8",  # full name
                 "flash",  # alias
-                "google/gemini-2.5-flash",  # canonical
+                "google/gemini-3.5-flash",  # canonical
             }
 
             available_model_names = set(available_models.keys())

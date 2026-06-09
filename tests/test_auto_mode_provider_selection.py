@@ -59,9 +59,9 @@ class TestAutoModeProviderSelection:
             balanced = ModelProviderRegistry.get_preferred_fallback_model(ToolModelCategory.BALANCED)
 
             # Should select appropriate Gemini models
-            assert extended_reasoning in ["gemini-3-pro-preview", "gemini-2.5-pro", "pro"]
-            assert fast_response in ["gemini-2.5-flash", "flash"]
-            assert balanced in ["gemini-2.5-flash", "flash"]
+            assert extended_reasoning in ["gemini-3.1-pro-preview", "gemini-2.5-pro", "pro"]
+            assert fast_response in ["gemini-flash", "gemini-3.5-flash", "flash"]
+            assert balanced in ["gemini-flash", "gemini-3.5-flash", "flash"]
 
         finally:
             # Restore original environment
@@ -97,10 +97,10 @@ class TestAutoModeProviderSelection:
             fast_response = ModelProviderRegistry.get_preferred_fallback_model(ToolModelCategory.FAST_RESPONSE)
             balanced = ModelProviderRegistry.get_preferred_fallback_model(ToolModelCategory.BALANCED)
 
-            # Should select appropriate OpenAI models based on new preference order
-            assert extended_reasoning == "gpt-5.1-codex"  # GPT-5.1 Codex prioritized for extended reasoning
-            assert fast_response == "gpt-5.2"  # gpt-5.2 comes first in fast response preference
-            assert balanced == "gpt-5.2"  # gpt-5.2 for balanced
+            # Should select appropriate OpenAI models based on current preference order
+            assert extended_reasoning == "gpt-5.5"
+            assert fast_response == "gpt-5.4-mini"
+            assert balanced == "gpt-5.5"
 
         finally:
             # Restore original environment
@@ -139,10 +139,10 @@ class TestAutoModeProviderSelection:
             fast_response = ModelProviderRegistry.get_preferred_fallback_model(ToolModelCategory.FAST_RESPONSE)
 
             # Should prefer Gemini now (based on new provider priority: Gemini before OpenAI)
-            assert extended_reasoning == "gemini-3-pro-preview"  # Gemini 3 Pro Preview has higher priority now
+            assert extended_reasoning == "gemini-3.1-pro-preview"
 
             # Should prefer Gemini for fast response
-            assert fast_response == "gemini-2.5-flash"  # Gemini has higher priority now
+            assert fast_response == "gemini-flash"
 
         finally:
             # Restore original environment
@@ -203,7 +203,7 @@ class TestAutoModeProviderSelection:
             # Set up environment with restrictions
             os.environ["GEMINI_API_KEY"] = "test-key"
             os.environ["OPENAI_API_KEY"] = "test-key"
-            os.environ["OPENAI_ALLOWED_MODELS"] = "o4-mini"  # Only allow o4-mini
+            os.environ["OPENAI_ALLOWED_MODELS"] = "gpt-5.4-mini"
 
             # Clear restriction service to pick up new restrictions
             import utils.model_restrictions
@@ -221,16 +221,16 @@ class TestAutoModeProviderSelection:
             available_models = ModelProviderRegistry.get_available_models(respect_restrictions=True)
 
             # Should include allowed OpenAI model
-            assert "o4-mini" in available_models
-            assert available_models["o4-mini"] == ProviderType.OPENAI
+            assert "gpt-5.4-mini" in available_models
+            assert available_models["gpt-5.4-mini"] == ProviderType.OPENAI
 
             # Should NOT include restricted OpenAI models
             assert "o3" not in available_models
             assert "o3-mini" not in available_models
 
             # Should include all Gemini models (no restrictions)
-            assert "gemini-2.5-flash" in available_models
-            assert available_models["gemini-2.5-flash"] == ProviderType.GOOGLE
+            assert "gemini-3.5-flash" in available_models
+            assert available_models["gemini-3.5-flash"] == ProviderType.GOOGLE
 
         finally:
             # Restore original environment
@@ -270,7 +270,7 @@ class TestAutoModeProviderSelection:
             assert gemini_provider.get_provider_type() == ProviderType.GOOGLE
 
             # OpenAI models
-            openai_provider = ModelProviderRegistry.get_provider_for_model("o3")
+            openai_provider = ModelProviderRegistry.get_provider_for_model("gpt-5.5")
             assert openai_provider is not None
             assert openai_provider.get_provider_type() == ProviderType.OPENAI
 
@@ -316,12 +316,11 @@ class TestAutoModeProviderSelection:
 
             # Test that providers resolve aliases correctly
             test_cases = [
-                ("flash", ProviderType.GOOGLE, "gemini-2.5-flash"),
-                ("pro", ProviderType.GOOGLE, "gemini-3-pro-preview"),  # "pro" now resolves to gemini-3-pro-preview
-                ("mini", ProviderType.OPENAI, "gpt-5-mini"),  # "mini" now resolves to gpt-5-mini
-                ("o3mini", ProviderType.OPENAI, "o3-mini"),
-                ("grok", ProviderType.XAI, "grok-4"),
-                ("grok-4.1-fast-reasoning", ProviderType.XAI, "grok-4-1-fast-reasoning"),
+                ("flash", ProviderType.GOOGLE, "gemini-3.5-flash"),
+                ("pro", ProviderType.GOOGLE, "gemini-3.1-pro-preview"),
+                ("mini", ProviderType.OPENAI, "gpt-5.4-mini"),
+                ("grok", ProviderType.XAI, "grok-4.3"),
+                ("grok-4.1-fast-reasoning", ProviderType.XAI, "grok-4.3"),
             ]
 
             for alias, expected_provider_type, expected_resolved_name in test_cases:
