@@ -1,0 +1,23 @@
+providers/dial.py
+  s_57331c9c43cb53::t_4bc73dceb1583d 184-185,187-189,225,228-229,232,238
+conf/dial_models.json
+  s_57331c9c43cb53::t_4bc73dceb1583d 101-102,117-118
+tests/test_dial_provider.py
+  s_57331c9c43cb53::t_4bc73dceb1583d 99,107,186,193-216
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "6a92f94929a29f9684f5e4018198c98cae2c4400",
+  "prompts": {},
+  "sessions": {
+    "s_57331c9c43cb53": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ea9fc-e0e3-74a3-8cc4-ca68e473b40f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "刘俊鑫 <673638712@qq.com>"
+    }
+  }
+}
