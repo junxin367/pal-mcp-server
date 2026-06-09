@@ -181,9 +181,12 @@ class DIALModelProvider(RegistryBackedProviderMixin, OpenAICompatibleProvider):
         if not self.validate_model_name(model_name):
             raise ValueError(f"Model '{model_name}' not in allowed models list. Allowed models: {self.allowed_models}")
 
-        # Validate parameters and fetch capabilities
-        self.validate_parameters(model_name, temperature)
+        # Fetch capabilities before parameter validation so unsupported sampling
+        # parameters can be omitted instead of failing before request assembly.
         capabilities = self.get_capabilities(model_name)
+        effective_temperature = capabilities.get_effective_temperature(temperature)
+        if effective_temperature is not None:
+            self.validate_parameters(model_name, effective_temperature)
 
         # Prepare messages
         messages = []
@@ -219,20 +222,20 @@ class DIALModelProvider(RegistryBackedProviderMixin, OpenAICompatibleProvider):
         }
 
         # Determine temperature support from capabilities
-        supports_temperature = capabilities.supports_temperature
+        supports_sampling = effective_temperature is not None
 
         # Add temperature parameter if supported
-        if supports_temperature:
-            completion_params["temperature"] = temperature
+        if supports_sampling:
+            completion_params["temperature"] = effective_temperature
 
         # Add max tokens if specified and model supports it
-        if max_output_tokens and supports_temperature:
+        if max_output_tokens and supports_sampling:
             completion_params["max_tokens"] = max_output_tokens
 
         # Add additional parameters
         for key, value in kwargs.items():
             if key in ["top_p", "frequency_penalty", "presence_penalty", "seed", "stop", "stream"]:
-                if not supports_temperature and key in ["top_p", "frequency_penalty", "presence_penalty", "stream"]:
+                if not supports_sampling and key in ["top_p", "frequency_penalty", "presence_penalty", "stream"]:
                     continue
                 completion_params[key] = value
 

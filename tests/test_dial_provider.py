@@ -96,6 +96,7 @@ class TestDIALProvider:
         assert capabilities.context_window == 200_000
         assert capabilities.supports_images is True
         assert capabilities.supports_extended_thinking is False
+        assert capabilities.supports_temperature is False
 
         # Test Claude 4.1 with thinking mode
         capabilities = provider.get_capabilities("opus-4.1-thinking")
@@ -103,6 +104,7 @@ class TestDIALProvider:
         assert capabilities.context_window == 200_000
         assert capabilities.supports_images is True
         assert capabilities.supports_extended_thinking is True
+        assert capabilities.supports_temperature is False
 
         # Test Gemini capabilities
         capabilities = provider.get_capabilities("gemini-2.5-pro")
@@ -181,11 +183,37 @@ class TestDIALProvider:
         mock_client.chat.completions.create.assert_called_once()
         create_call_args = mock_client.chat.completions.create.call_args
         assert create_call_args[1]["model"] == "o3-2025-04-16"  # Resolved name
+        assert "temperature" not in create_call_args[1]
 
         # Verify response
         assert response.content == "Test response"
         assert response.model_name == "o3"  # Original name preserved
         assert response.metadata["model"] == "gpt-4"  # API returned model name from mock
+
+    @patch("openai.OpenAI")
+    def test_generate_content_omits_temperature_for_dial_claude(self, mock_openai_class):
+        """Test that DIAL Claude deployments don't send unsupported temperature."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="Test response"))]
+        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+        mock_response.model = "claude"
+        mock_response.id = "test-id"
+        mock_response.created = 1234567890
+        mock_response.choices[0].finish_reason = "stop"
+
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_class.return_value = mock_client
+
+        provider = DIALModelProvider("test-key")
+
+        response = provider.generate_content(prompt="Test prompt", model_name="opus-4.1", temperature=0.7)
+
+        mock_client.chat.completions.create.assert_called_once()
+        create_call_args = mock_client.chat.completions.create.call_args[1]
+        assert create_call_args["model"] == "anthropic.claude-opus-4.1-20250805-v1:0"
+        assert "temperature" not in create_call_args
+        assert response.content == "Test response"
 
     def test_provider_type(self):
         """Test provider type identification."""

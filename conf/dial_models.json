@@ -66,8 +66,8 @@
       "supports_json_mode": true,
       "supports_images": true,
       "max_image_size_mb": 5.0,
-      "supports_temperature": true,
-      "temperature_constraint": "range"
+      "supports_temperature": false,
+      "temperature_constraint": "fixed"
     },
     {
       "model_name": "anthropic.claude-sonnet-4.1-20250805-v1:0-with-thinking",
@@ -82,8 +82,8 @@
       "supports_json_mode": true,
       "supports_images": true,
       "max_image_size_mb": 5.0,
-      "supports_temperature": true,
-      "temperature_constraint": "range"
+      "supports_temperature": false,
+      "temperature_constraint": "fixed"
     },
     {
       "model_name": "anthropic.claude-opus-4.1-20250805-v1:0",
@@ -98,8 +98,8 @@
       "supports_json_mode": true,
       "supports_images": true,
       "max_image_size_mb": 5.0,
-      "supports_temperature": true,
-      "temperature_constraint": "range"
+      "supports_temperature": false,
+      "temperature_constraint": "fixed"
     },
     {
       "model_name": "anthropic.claude-opus-4.1-20250805-v1:0-with-thinking",
@@ -114,8 +114,8 @@
       "supports_json_mode": true,
       "supports_images": true,
       "max_image_size_mb": 5.0,
-      "supports_temperature": true,
-      "temperature_constraint": "range"
+      "supports_temperature": false,
+      "temperature_constraint": "fixed"
     },
     {
       "model_name": "gemini-2.5-pro-preview-03-25-google-search",
