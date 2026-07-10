@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from providers.openai import OpenAIModelProvider
+from providers.openai_compatible import OpenAICompatibleProvider
+from providers.shared import ModelCapabilities, ProviderType, TemperatureConstraint
 
 
 class TestCustomOpenAITemperatureParameterFix:
@@ -25,6 +27,80 @@ class TestCustomOpenAITemperatureParameterFix:
         json.dump(config, temp_file, indent=2)
         temp_file.close()
         return temp_file.name
+
+    @staticmethod
+    def _create_reasoning_provider(mock_openai_class):
+        """Create an OpenAI-compatible provider with reasoning capabilities."""
+        capabilities = ModelCapabilities(
+            provider=ProviderType.CUSTOM,
+            model_name="reasoning-model",
+            friendly_name="Reasoning Model",
+            context_window=100_000,
+            max_output_tokens=10_000,
+            supports_extended_thinking=True,
+            supports_temperature=False,
+            default_reasoning_effort="max",
+            temperature_constraint=TemperatureConstraint.create("fixed"),
+        )
+
+        class ReasoningProvider(OpenAICompatibleProvider):
+            FRIENDLY_NAME = "Reasoning Test"
+
+            def get_provider_type(self):
+                return ProviderType.CUSTOM
+
+            def get_capabilities(self, model_name):
+                return capabilities
+
+            def validate_model_name(self, model_name):
+                return True
+
+            def list_models(self, **kwargs):
+                return ["reasoning-model"]
+
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = "Test response"
+        mock_response.choices[0].finish_reason = "stop"
+        mock_response.model = "reasoning-model"
+        mock_response.id = "test-id"
+        mock_response.created = 1234567890
+        mock_response.usage = None
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_class.return_value = mock_client
+
+        return ReasoningProvider(api_key="test-key"), mock_client
+
+    @patch("providers.openai_compatible.OpenAI")
+    def test_chat_completions_uses_model_default_reasoning_effort(self, mock_openai_class):
+        """Missing explicit input should use the model's default reasoning effort."""
+        provider, mock_client = self._create_reasoning_provider(mock_openai_class)
+
+        provider.generate_content(
+            prompt="Test prompt",
+            model_name="reasoning-model",
+            thinking_mode="medium",
+            requested_thinking_mode=None,
+        )
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["reasoning_effort"] == "max"
+
+    @patch("providers.openai_compatible.OpenAI")
+    def test_chat_completions_prefers_requested_reasoning_effort(self, mock_openai_class):
+        """Explicit tool input should override the model's default reasoning effort."""
+        provider, mock_client = self._create_reasoning_provider(mock_openai_class)
+
+        provider.generate_content(
+            prompt="Test prompt",
+            model_name="reasoning-model",
+            thinking_mode="medium",
+            requested_thinking_mode="low",
+        )
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["reasoning_effort"] == "low"
 
     @patch("utils.model_restrictions.get_restriction_service")
     @patch("providers.openai_compatible.OpenAI")

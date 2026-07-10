@@ -409,7 +409,8 @@ class SimpleTool(BaseTool):
             for warning in temp_warnings:
                 # Get thinking mode with defaults
                 logger.warning(warning)
-            thinking_mode = self.get_request_thinking_mode(request)
+            requested_thinking_mode = self.get_request_thinking_mode(request)
+            thinking_mode = requested_thinking_mode
             if thinking_mode is None:
                 thinking_mode = self.get_default_thinking_mode()
 
@@ -447,6 +448,7 @@ class SimpleTool(BaseTool):
                 system_prompt=system_prompt,
                 temperature=temperature,
                 thinking_mode=thinking_mode if supports_thinking else None,
+                requested_thinking_mode=requested_thinking_mode if supports_thinking else None,
                 images=images if images else None,
             )
 
@@ -504,6 +506,7 @@ class SimpleTool(BaseTool):
                                 system_prompt=system_prompt,
                                 temperature=temperature,
                                 thinking_mode=thinking_mode if supports_thinking else None,
+                                requested_thinking_mode=requested_thinking_mode if supports_thinking else None,
                                 images=images if images else None,
                             )
 

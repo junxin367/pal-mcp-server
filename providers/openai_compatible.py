@@ -595,6 +595,13 @@ class OpenAICompatibleProvider(ModelProvider):
         if supports_sampling:
             completion_params["temperature"] = effective_temperature
 
+        # OpenAI-compatible Chat Completions gateways use reasoning_effort for
+        # model reasoning. Explicit tool input overrides the model default.
+        if capabilities and capabilities.supports_extended_thinking:
+            reasoning_effort = kwargs.get("requested_thinking_mode") or capabilities.default_reasoning_effort
+            if reasoning_effort:
+                completion_params["reasoning_effort"] = reasoning_effort
+
         # Add max tokens if specified and model supports it
         # O3/O4 models that don't support temperature also don't support max_tokens
         if max_output_tokens and supports_sampling:

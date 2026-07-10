@@ -7,10 +7,11 @@ This module contains unit tests to ensure that the Chat tool
 
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from providers.shared import ModelCapabilities, ModelResponse, ProviderType, RangeTemperatureConstraint
 from tools.chat import ChatRequest, ChatTool
 from tools.shared.exceptions import ToolExecutionError
 
@@ -257,6 +258,64 @@ class TestChatTool:
         required_fields = self.tool.get_required_fields()
         assert "prompt" in required_fields
         assert "working_directory_absolute_path" in required_fields
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("request_thinking_mode", "expected_effective_mode"),
+        [
+            (None, "medium"),
+            ("low", "low"),
+        ],
+    )
+    async def test_execute_preserves_requested_thinking_mode(
+        self,
+        tmp_path,
+        request_thinking_mode,
+        expected_effective_mode,
+    ):
+        """Simple tools should distinguish explicit thinking mode from their fallback."""
+        capabilities = ModelCapabilities(
+            provider=ProviderType.CUSTOM,
+            model_name="reasoning-model",
+            friendly_name="Reasoning Model",
+            context_window=100_000,
+            max_output_tokens=10_000,
+            supports_extended_thinking=True,
+            supports_temperature=True,
+            temperature_constraint=RangeTemperatureConstraint(0.0, 1.0, 0.3),
+        )
+        provider = Mock()
+        provider.get_provider_type.return_value = ProviderType.CUSTOM
+        provider.generate_content.return_value = ModelResponse(
+            content="Test response",
+            model_name="reasoning-model",
+            friendly_name="Reasoning Model",
+            provider=ProviderType.CUSTOM,
+            metadata={"finish_reason": "stop"},
+        )
+        model_context = SimpleNamespace(
+            provider=provider,
+            capabilities=capabilities,
+            model_name="reasoning-model",
+        )
+        arguments = {
+            "prompt": "Test",
+            "model": "reasoning-model",
+            "working_directory_absolute_path": str(tmp_path),
+            "_model_context": model_context,
+        }
+        if request_thinking_mode is not None:
+            arguments["thinking_mode"] = request_thinking_mode
+
+        with (
+            patch.object(self.tool, "prepare_prompt", new=AsyncMock(return_value="Test prompt")),
+            patch("server.get_follow_up_instructions", return_value=""),
+        ):
+            await self.tool.execute(arguments)
+
+        call_kwargs = provider.generate_content.call_args.kwargs
+        assert call_kwargs["thinking_mode"] == expected_effective_mode
+        assert call_kwargs["requested_thinking_mode"] == request_thinking_mode
 
 
 class TestChatRequestModel:
