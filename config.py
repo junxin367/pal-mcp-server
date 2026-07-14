@@ -66,15 +66,48 @@ TEMPERATURE_CREATIVE = 1.0  # For architecture, deep thinking
 # Thinking Mode Defaults
 # DEFAULT_THINKING_MODE_THINKDEEP: Default thinking depth for extended reasoning tool
 # Higher modes use more computational budget but provide deeper analysis
-DEFAULT_THINKING_MODE_THINKDEEP = get_env("DEFAULT_THINKING_MODE_THINKDEEP", "high") or "high"
+VALID_THINKING_MODES = {"medium", "high", "xhigh", "max"}
+_configured_thinking_mode = get_env("DEFAULT_THINKING_MODE_THINKDEEP", "high") or "high"
+DEFAULT_THINKING_MODE_THINKDEEP = (
+    _configured_thinking_mode if _configured_thinking_mode in VALID_THINKING_MODES else "high"
+)
+
 
 # Consensus Tool Defaults
-# Consensus timeout and rate limiting settings
-DEFAULT_CONSENSUS_TIMEOUT = 120.0  # 2 minutes per model
+def _get_positive_int_env(name: str, default: int) -> int:
+    """Read a positive integer environment variable with a safe fallback."""
+    raw_value = get_env(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _get_positive_float_env(name: str, default: float) -> float:
+    """Read a positive float environment variable with a safe fallback."""
+    raw_value = get_env(name)
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+CONSENSUS_MAX_CONCURRENCY = _get_positive_int_env("CONSENSUS_MAX_CONCURRENCY", 3)
+CONSENSUS_SYNC_WAIT_SECONDS = _get_positive_float_env("CONSENSUS_SYNC_WAIT_SECONDS", 240.0)
+CONSENSUS_BACKGROUND_WAIT_SECONDS = _get_positive_float_env("CONSENSUS_BACKGROUND_WAIT_SECONDS", 360.0)
+CONSENSUS_TASK_TTL_SECONDS = _get_positive_int_env("CONSENSUS_TASK_TTL_SECONDS", 10_800)
 DEFAULT_CONSENSUS_MAX_INSTANCES_PER_COMBINATION = 2
 
-# NOTE: Consensus tool now uses sequential processing for MCP compatibility
-# Concurrent processing was removed to avoid async pattern violations
+# Chat Tool Defaults
+CHAT_SYNC_WAIT_SECONDS = _get_positive_float_env("CHAT_SYNC_WAIT_SECONDS", 240.0)
+CHAT_BACKGROUND_WAIT_SECONDS = _get_positive_float_env("CHAT_BACKGROUND_WAIT_SECONDS", 360.0)
+CHAT_TASK_TTL_SECONDS = _get_positive_int_env("CHAT_TASK_TTL_SECONDS", 10_800)
 
 # MCP Protocol Transport Limits
 #

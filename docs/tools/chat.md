@@ -48,6 +48,46 @@ word verdict in the end.
 - **Image support**: Include screenshots, diagrams, UI mockups for visual analysis: `"Chat with gemini about this error dialog screenshot to understand the user experience issue"`
 - **Dynamic collaboration**: Models can request additional files or context during the conversation if needed for a more thorough response
 - **Web search awareness**: Automatically identifies when online research would help and instructs Claude to perform targeted searches using continuation IDs
+- **Background fallback**: Requests that exceed the synchronous wait window return a queryable task ID instead of losing the eventual response
+
+## Slow Request Handling
+
+Chat remains synchronous by default. If a request is still running after 240 seconds, PAL returns:
+
+```json
+{
+  "status": "chat_in_progress",
+  "task_id": "f2d87b8d-...",
+  "model": "gpt-5.6-sol",
+  "background_wait_seconds": 360,
+  "total_timeout_seconds": 600
+}
+```
+
+Query it without sending the Chat prompt again:
+
+```json
+{
+  "tool": "chat_status",
+  "arguments": {
+    "task_id": "f2d87b8d-..."
+  }
+}
+```
+
+While the task is running, `chat_status` returns `pending`. When it completes, `chat_status` returns the original Chat response directly. Failed and unknown tasks return `failed` and `not_found` respectively.
+
+Background tasks are process-local. Restarting PAL invalidates unfinished task IDs. The default PAL result deadline is 600 seconds, and terminal task state remains queryable for the configured retention period. OpenAI-compatible providers receive the same request deadline and disable SDK-internal retries so the configured Custom Provider does not continue beyond PAL's retry window. Provider SDKs without request-level cancellation may still finish an in-flight network operation after PAL has marked the task failed.
+
+PAL permits only one active request per `continuation_id`. A concurrent request using the same continuation returns `conversation_in_progress` immediately instead of waiting outside the 240-second Chat fallback window. If the active Chat has already created a background task, the response includes its `task_id`.
+
+Optional environment variables:
+
+```dotenv
+CHAT_SYNC_WAIT_SECONDS=240
+CHAT_BACKGROUND_WAIT_SECONDS=360
+CHAT_TASK_TTL_SECONDS=10800
+```
 
 ## Tool Parameters
 
@@ -57,7 +97,7 @@ word verdict in the end.
 - `images`: Optional images for visual context (absolute paths)
 - `working_directory_absolute_path`: **Required** - Absolute path to an existing directory where generated code artifacts will be saved
 - `temperature`: Response creativity (0-1, default 0.5)
-- `thinking_mode`: minimal|low|medium|high|max (default: medium, Gemini only)
+- `thinking_mode`: medium|high|xhigh|max (default: medium, supported models only)
 - `continuation_id`: Continue previous conversations
 
 ## Structured Code Generation

@@ -619,7 +619,7 @@ class BaseTool(ABC):
         Override for tools that need more or less reasoning depth.
 
         Returns:
-            str: One of "minimal", "low", "medium", "high", "max"
+            str: One of "medium", "high", "xhigh", "max"
         """
         return "medium"  # Default to medium thinking for better reasoning
 

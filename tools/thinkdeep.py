@@ -81,7 +81,7 @@ class ThinkDeepWorkflowRequest(WorkflowRequest):
     )
     thinking_mode: Optional[str] = Field(
         default=None,
-        description="Depth: minimal/low/medium/high/max. Default 'high'.",
+        description="Depth: medium/high/xhigh/max. Default 'high'.",
     )
     # Context files and investigation scope
     problem_context: Optional[str] = Field(

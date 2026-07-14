@@ -6,9 +6,11 @@ from .analyze import AnalyzeTool
 from .apilookup import LookupTool
 from .challenge import ChallengeTool
 from .chat import ChatTool
+from .chat_status import ChatStatusTool
 from .clink import CLinkTool
 from .codereview import CodeReviewTool
 from .consensus import ConsensusTool
+from .consensus_status import ConsensusStatusTool
 from .debug import DebugIssueTool
 from .docgen import DocgenTool
 from .listmodels import ListModelsTool
@@ -29,8 +31,10 @@ __all__ = [
     "AnalyzeTool",
     "LookupTool",
     "ChatTool",
+    "ChatStatusTool",
     "CLinkTool",
     "ConsensusTool",
+    "ConsensusStatusTool",
     "ListModelsTool",
     "PlannerTool",
     "PrecommitTool",

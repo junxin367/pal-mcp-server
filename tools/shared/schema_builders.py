@@ -8,7 +8,7 @@ to maintain proper separation of concerns.
 
 from typing import Any
 
-from .base_models import COMMON_FIELD_DESCRIPTIONS
+from .base_models import COMMON_FIELD_DESCRIPTIONS, THINKING_MODES
 
 
 class SchemaBuilder:
@@ -29,7 +29,7 @@ class SchemaBuilder:
         },
         "thinking_mode": {
             "type": "string",
-            "enum": ["minimal", "low", "medium", "high", "max"],
+            "enum": list(THINKING_MODES),
             "description": COMMON_FIELD_DESCRIPTIONS["thinking_mode"],
         },
         "continuation_id": {

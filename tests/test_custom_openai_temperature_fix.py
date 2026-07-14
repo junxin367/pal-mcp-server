@@ -96,11 +96,11 @@ class TestCustomOpenAITemperatureParameterFix:
             prompt="Test prompt",
             model_name="reasoning-model",
             thinking_mode="medium",
-            requested_thinking_mode="low",
+            requested_thinking_mode="xhigh",
         )
 
         call_kwargs = mock_client.chat.completions.create.call_args.kwargs
-        assert call_kwargs["reasoning_effort"] == "low"
+        assert call_kwargs["reasoning_effort"] == "xhigh"
 
     @patch("utils.model_restrictions.get_restriction_service")
     @patch("providers.openai_compatible.OpenAI")

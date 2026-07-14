@@ -109,11 +109,10 @@ These only apply to models that support customizing token usage for extended thi
 
 | Mode | Token Budget | Use Case | Cost Impact |
 |------|-------------|----------|-------------|
-| `minimal` | 128 tokens | Simple, straightforward tasks | Lowest cost |
-| `low` | 2,048 tokens | Basic reasoning tasks | 16x more than minimal |
-| `medium` | 8,192 tokens | **Default** - Most development tasks | 64x more than minimal |
-| `high` | 16,384 tokens | Complex problems requiring thorough analysis (default for `thinkdeep`) | 128x more than minimal |
-| `max` | 32,768 tokens | Exhaustive reasoning | 256x more than minimal |
+| `medium` | 8,192 tokens | **Default** - Most development tasks | Baseline |
+| `high` | 16,384 tokens | Complex problems requiring thorough analysis (default for `thinkdeep`) | 2x medium |
+| `xhigh` | Provider-defined | Extended reasoning above high when supported | Provider-defined |
+| `max` | 32,768 tokens | Exhaustive reasoning | 4x medium |
 
 ### How to Use Thinking Modes
 
@@ -123,7 +122,7 @@ These only apply to models that support customizing token usage for extended thi
 
 **In most cases, let Claude automatically manage thinking modes** for optimal balance of cost and quality. Override manually when you have specific requirements:
 
-**Use lower modes (`minimal`, `low`) to save tokens when:**
+**Use `medium` to save tokens when:**
 - Doing simple formatting or style checks
 - Getting quick explanations of basic concepts
 - Working with straightforward code
@@ -138,9 +137,9 @@ These only apply to models that support customizing token usage for extended thi
 - Working on performance optimizations
 
 **Token Cost Examples:**
-- `minimal` (128 tokens) vs `max` (32,768 tokens) = 256x difference in thinking tokens
-- For a simple formatting check, using `minimal` instead of the default `medium` saves ~8,000 thinking tokens
-- For critical security reviews, the extra tokens in `high` or `max` mode are a worthwhile investment
+- `medium` (8,192 tokens) vs `max` (32,768 tokens) = 4x difference in thinking tokens
+- For straightforward work, use `medium` instead of `high`, `xhigh`, or `max`
+- For critical security reviews, the extra reasoning in `high`, `xhigh`, or `max` mode can be worthwhile
 
 **Examples by scenario:**
 ```
@@ -169,7 +168,7 @@ All tools that work with files support **both individual files and entire direct
 - `model`: auto|pro|flash|flash-2.0|flashlite|o3|o3-mini|o4-mini|gpt4.1|gpt5.2|gpt5.1-codex|gpt5.1-codex-mini|gpt5|gpt5-mini|gpt5-nano (default: server default)
 - `analysis_type`: architecture|performance|security|quality|general
 - `output_format`: summary|detailed|actionable
-- `thinking_mode`: minimal|low|medium|high|max (default: medium, Gemini only)
+- `thinking_mode`: medium|high|xhigh|max (default: medium, supported models only)
 - **Web search capability**: The assistant now automatically requests web searches when it needs current documentation or best practices—no parameter required
 
 ```
@@ -186,7 +185,7 @@ All tools that work with files support **both individual files and entire direct
 - `focus_on`: Specific aspects to focus on
 - `standards`: Coding standards to enforce
 - `severity_filter`: critical|high|medium|all
-- `thinking_mode`: minimal|low|medium|high|max (default: medium, Gemini only)
+- `thinking_mode`: medium|high|xhigh|max (default: medium, supported models only)
 
 ```
 "Review the entire api/ directory for security issues" (auto mode picks best model)
@@ -202,7 +201,7 @@ All tools that work with files support **both individual files and entire direct
 - `files`: Files or directories related to the issue
 - `runtime_info`: Environment details
 - `previous_attempts`: What you've tried
-- `thinking_mode`: minimal|low|medium|high|max (default: medium, Gemini only)
+- `thinking_mode`: medium|high|xhigh|max (default: medium, supported models only)
 - **Web search capability**: Automatically initiates searches for relevant error messages or recent fixes when needed
 
 ```
@@ -217,7 +216,7 @@ All tools that work with files support **both individual files and entire direct
 - `problem_context`: Additional context
 - `focus_areas`: Specific aspects to focus on
 - `files`: Files or directories for context
-- `thinking_mode`: minimal|low|medium|high|max (default: max, Gemini only)
+- `thinking_mode`: medium|high|xhigh|max (default: max, supported models only)
 - **Web search capability**: Automatically calls for research when architecture references or external insights are required
 
 ```
@@ -231,7 +230,7 @@ All tools that work with files support **both individual files and entire direct
 - `prompt`: Description of what to test, testing objectives, and scope (required)
 - `model`: auto|pro|flash|flash-2.0|flashlite|o3|o3-mini|o4-mini|gpt4.1|gpt5.2|gpt5.1-codex|gpt5.1-codex-mini|gpt5|gpt5-mini|gpt5-nano (default: server default)
 - `test_examples`: Optional existing test files as style/pattern reference
-- `thinking_mode`: minimal|low|medium|high|max (default: medium, Gemini only)
+- `thinking_mode`: medium|high|xhigh|max (default: medium, supported models only)
 
 ```
 "Generate tests for User.login() method with edge cases" (auto mode picks best model)
@@ -247,7 +246,7 @@ All tools that work with files support **both individual files and entire direct
 - `model`: auto|pro|flash|flash-2.0|flashlite|o3|o3-mini|o4-mini|gpt4.1|gpt5.2|gpt5.1-codex|gpt5.1-codex-mini|gpt5|gpt5-mini|gpt5-nano (default: server default)
 - `focus_areas`: Specific areas to focus on (e.g., 'performance', 'readability', 'maintainability', 'security')
 - `style_guide_examples`: Optional existing code files to use as style/pattern reference
-- `thinking_mode`: minimal|low|medium|high|max (default: medium, Gemini only)
+- `thinking_mode`: medium|high|xhigh|max (default: medium, supported models only)
 - `continuation_id`: Thread continuation ID for multi-turn conversations
 
 ```

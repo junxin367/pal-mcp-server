@@ -1,14 +1,4 @@
-"""
-Accurate Consensus Workflow Test
-
-This test validates the complete consensus workflow step-by-step to ensure:
-1. Step 1: Claude provides its own analysis
-2. Step 2: Tool consults first model and returns response to Claude
-3. Step 3: Tool consults second model and returns response to Claude
-4. Step 4: Claude synthesizes all perspectives
-
-This replaces the old faulty test that used non-workflow parameters.
-"""
+"""验证 Consensus 在单次调用中并行咨询全部模型。"""
 
 import json
 
@@ -16,7 +6,7 @@ from .conversation_base_test import ConversationBaseTest
 
 
 class TestConsensusWorkflowAccurate(ConversationBaseTest):
-    """Test complete consensus workflow with accurate step-by-step behavior"""
+    """验证并行 Consensus 的完整响应结构和稳定模型顺序。"""
 
     @property
     def test_name(self) -> str:
@@ -24,30 +14,28 @@ class TestConsensusWorkflowAccurate(ConversationBaseTest):
 
     @property
     def test_description(self) -> str:
-        return "Test NEW efficient consensus workflow: 2 models = 2 steps (Claude+model1, model2+synthesis)"
+        return "验证两个独立模型在第 1 步并行执行，并一次返回完整结果"
 
     def run_test(self) -> bool:
-        """Run complete consensus workflow test"""
-        # Set up the test environment
+        """运行完整的单次并行 Consensus 场景。"""
         self.setUp()
 
         try:
-            self.logger.info("Testing complete consensus workflow step-by-step")
-            self.logger.info("Expected NEW flow: Step1(Claude+Model1) -> Step2(Model2+Synthesis)")
-
-            # ============================================================================
-            # STEP 1: Claude analysis + first model consultation
-            # ============================================================================
-            self.logger.info("=== STEP 1: Claude analysis + flash:for consultation ===")
-
-            step1_response, continuation_id = self.call_mcp_tool_direct(
+            self.logger.info("测试单次并行 Consensus：flash:for + flash:against")
+            response, _ = self.call_mcp_tool_direct(
                 "consensus",
                 {
-                    "step": "Should we add a new AI-powered search feature to our application? Please analyze the technical feasibility, user value, and implementation complexity.",
+                    "step": (
+                        "Should we add a new AI-powered search feature to our application? "
+                        "Please analyze the technical feasibility, user value, and implementation complexity."
+                    ),
                     "step_number": 1,
-                    "total_steps": 2,  # 2 models (each step includes consultation + analysis)
-                    "next_step_required": True,
-                    "findings": "Initial assessment of AI search feature proposal considering user needs, technical constraints, and business value.",
+                    "total_steps": 1,
+                    "next_step_required": False,
+                    "findings": (
+                        "Initial assessment of AI search feature proposal considering user needs, "
+                        "technical constraints, and business value."
+                    ),
                     "models": [
                         {
                             "model": "flash",
@@ -60,167 +48,61 @@ class TestConsensusWorkflowAccurate(ConversationBaseTest):
                             "stance_prompt": "Focus on implementation complexity and resource requirements.",
                         },
                     ],
-                    "model": "flash",  # Claude's execution model
                 },
             )
 
-            if not step1_response:
-                self.logger.error("Step 1 failed - no response")
+            if not response:
+                self.logger.error("Consensus 未返回响应")
                 return False
 
-            step1_data = json.loads(step1_response)
-            self.logger.info(f"Step 1 status: {step1_data.get('status')}")
-
-            # Validate step 1 response (should include Claude's analysis + first model consultation)
-            if step1_data.get("status") != "analysis_and_first_model_consulted":
+            data = json.loads(response)
+            if data.get("status") != "consensus_workflow_complete":
                 self.logger.error(
-                    f"Expected status 'analysis_and_first_model_consulted', got: {step1_data.get('status')}"
+                    "期望 status=consensus_workflow_complete，实际为 %s",
+                    data.get("status"),
                 )
                 return False
 
-            if step1_data.get("step_number") != 1:
-                self.logger.error(f"Expected step_number 1, got: {step1_data.get('step_number')}")
+            if data.get("step_number") != 1 or data.get("total_steps") != 1:
+                self.logger.error("并行 Consensus 应在第 1 步完成：%s", data)
                 return False
 
-            if not step1_data.get("next_step_required"):
-                self.logger.error("Expected next_step_required=True for step 1")
+            if data.get("next_step_required") or not data.get("consensus_complete"):
+                self.logger.error("完整结果必须标记 next_step_required=false 且 consensus_complete=true")
                 return False
 
-            # Verify Claude's analysis is included
-            if "agent_analysis" not in step1_data:
-                self.logger.error("Expected agent_analysis in step 1 response")
+            responses = data.get("model_responses", [])
+            if len(responses) != 2:
+                self.logger.error("期望 2 个模型响应，实际为 %s", len(responses))
                 return False
 
-            # Verify first model response is included
-            if "model_response" not in step1_data:
-                self.logger.error("Expected model_response in step 1 response")
+            expected_models = [("flash", "for"), ("flash", "against")]
+            actual_models = [(item.get("model"), item.get("stance")) for item in responses]
+            if actual_models != expected_models:
+                self.logger.error("模型响应顺序错误，期望 %s，实际 %s", expected_models, actual_models)
                 return False
 
-            model1_response = step1_data["model_response"]
-            if model1_response.get("model") != "flash" or model1_response.get("stance") != "for":
-                self.logger.error(
-                    f"Expected flash:for model response in step 1, got: {model1_response.get('model')}:{model1_response.get('stance')}"
-                )
+            if any(not item.get("verdict") for item in responses):
+                self.logger.error("模型响应缺少 verdict")
                 return False
 
-            self.logger.info("✓ Step 1 completed - Claude analysis + first model (flash:for) consulted")
-
-            # ============================================================================
-            # STEP 2: Final step - second model consultation + synthesis
-            # ============================================================================
-            self.logger.info("=== STEP 2: Final step - second model (flash:against) + synthesis ===")
-
-            step2_response, _ = self.call_mcp_tool_direct(
-                "consensus",
-                {
-                    "step": "I need to review the second model's perspective and provide final synthesis.",
-                    "step_number": 2,
-                    "total_steps": 2,
-                    "next_step_required": False,  # Final step
-                    "findings": "Analyzed first model's 'for' perspective. Now ready for second model's 'against' stance and final synthesis.",
-                    "continuation_id": continuation_id,
-                    "model": "flash",
-                },
-            )
-
-            if not step2_response:
-                self.logger.error("Step 2 failed - no response")
+            if data.get("accumulated_responses") != responses:
+                self.logger.error("accumulated_responses 应与 model_responses 一致")
                 return False
 
-            self.logger.info(f"Step 2 raw response: {step2_response[:500]}...")
-            step2_data = json.loads(step2_response)
-            self.logger.info(f"Step 2 status: {step2_data.get('status')}")
-
-            # Validate step 2 - should show consensus completion
-            if step2_data.get("status") != "consensus_workflow_complete":
-                self.logger.error(f"Expected status 'consensus_workflow_complete', got: {step2_data.get('status')}")
+            complete_consensus = data.get("complete_consensus", {})
+            if complete_consensus.get("models_consulted") != ["flash:for", "flash:against"]:
+                self.logger.error("complete_consensus 模型列表错误：%s", complete_consensus)
                 return False
 
-            if step2_data.get("model_consulted") != "flash":
-                self.logger.error(f"Expected model_consulted 'flash', got: {step2_data.get('model_consulted')}")
-                return False
-
-            if step2_data.get("model_stance") != "against":
-                self.logger.error(f"Expected model_stance 'against', got: {step2_data.get('model_stance')}")
-                return False
-
-            # Verify model response is included
-            if "model_response" not in step2_data:
-                self.logger.error("Expected model_response in step 2")
-                return False
-
-            model2_response = step2_data["model_response"]
-            if model2_response.get("model") != "flash":
-                self.logger.error(f"Expected model_response.model 'flash', got: {model2_response.get('model')}")
-                return False
-
-            # Verify consensus completion data
-            if not step2_data.get("consensus_complete"):
-                self.logger.error("Expected consensus_complete=True in final step")
-                return False
-
-            if "complete_consensus" not in step2_data:
-                self.logger.error("Expected complete_consensus data in final step")
-                return False
-
-            self.logger.info("✓ Step 2 completed - Second model (flash:against) consulted and consensus complete")
-            self.logger.info(f"Model 2 verdict preview: {model2_response.get('verdict', 'No verdict')[:100]}...")
-
-            # Validate final consensus completion data
-            complete_consensus = step2_data["complete_consensus"]
             if complete_consensus.get("total_responses") != 2:
-                self.logger.error(f"Expected 2 model responses, got: {complete_consensus.get('total_responses')}")
+                self.logger.error("complete_consensus.total_responses 应为 2")
                 return False
 
-            models_consulted = complete_consensus.get("models_consulted", [])
-            expected_models = ["flash:for", "flash:against"]
-            if models_consulted != expected_models:
-                self.logger.error(f"Expected models {expected_models}, got: {models_consulted}")
-                return False
-
-            # ============================================================================
-            # VALIDATION: Check accumulated responses are available
-            # ============================================================================
-            self.logger.info("=== VALIDATION: Checking accumulated responses ===")
-
-            if "accumulated_responses" not in step2_data:
-                self.logger.error("Expected accumulated_responses in final step")
-                return False
-
-            accumulated = step2_data["accumulated_responses"]
-            if len(accumulated) != 2:
-                self.logger.error(f"Expected 2 accumulated responses, got: {len(accumulated)}")
-                return False
-
-            # Verify first response (flash:for)
-            response1 = accumulated[0]
-            if response1.get("model") != "flash" or response1.get("stance") != "for":
-                self.logger.error(f"First response incorrect: {response1}")
-                return False
-
-            # Verify second response (flash:against)
-            response2 = accumulated[1]
-            if response2.get("model") != "flash" or response2.get("stance") != "against":
-                self.logger.error(f"Second response incorrect: {response2}")
-                return False
-
-            self.logger.info("✓ All accumulated responses validated")
-
-            # ============================================================================
-            # SUCCESS
-            # ============================================================================
-            self.logger.info("🎉 CONSENSUS WORKFLOW TEST PASSED")
-            self.logger.info("✓ Step 1: Claude analysis + first model (flash:for) consulted")
-            self.logger.info("✓ Step 2: Second model (flash:against) consulted + synthesis completed")
-            self.logger.info("✓ All model responses accumulated correctly")
-            self.logger.info("✓ New efficient workflow: 2 models = 2 steps (not 4)")
-            self.logger.info("✓ Workflow progression validated at each step")
-
+            self.logger.info("✓ 两个模型已在单次调用中完成并按输入顺序返回")
             return True
-
-        except Exception as e:
-            self.logger.error(f"Consensus workflow test failed with exception: {str(e)}")
-            import traceback
-
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+        except Exception as exc:
+            self.logger.exception("Consensus 并行工作流测试失败：%s", exc)
             return False
+        finally:
+            self.cleanup_test_files()

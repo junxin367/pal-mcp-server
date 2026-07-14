@@ -17,9 +17,48 @@ Consensus tool uses extended reasoning models by default, making it ideal for co
 The consensus tool orchestrates multiple AI models to provide diverse perspectives on your proposals:
 
 1. **Assign stances**: Each model can take a specific viewpoint (supportive, critical, or neutral)
-2. **Gather opinions**: Models analyze your proposal from their assigned perspective with built-in common-sense guardrails
-3. **Synthesize results**: Claude combines all perspectives into a balanced recommendation
-4. **Natural language**: Use simple descriptions like "supportive", "critical", or "against" - the tool handles synonyms automatically
+2. **Run in parallel**: PAL consults up to three independent models at once and preserves the input model order
+3. **Gather opinions**: Models analyze the same original proposal without seeing other model responses
+4. **Synthesize results**: Claude combines all perspectives into a balanced recommendation
+5. **Natural language**: Use simple descriptions like "supportive", "critical", or "against" - the tool handles synonyms automatically
+
+## Execution and Background Fallback
+
+Consensus normally behaves synchronously: the first tool call waits for all models and returns every response together.
+
+- Default maximum concurrency: `3`
+- Default synchronous wait: `240` seconds
+- Default additional background runtime: `360` seconds
+- Default total runtime limit: `600` seconds (10 minutes)
+- Default background result retention: `10800` seconds (3 hours)
+
+If the parallel task is still running after 240 seconds, `consensus` returns:
+
+```json
+{
+  "status": "consensus_in_progress",
+  "task_id": "f2d87b8d-...",
+  "completed_models": 1,
+  "total_models": 3,
+  "background_wait_seconds": 360,
+  "total_timeout_seconds": 600
+}
+```
+
+Query it without starting another model request:
+
+```json
+{
+  "tool": "consensus_status",
+  "arguments": {
+    "task_id": "f2d87b8d-..."
+  }
+}
+```
+
+`consensus_status` returns `pending`, `completed`, `failed`, or `not_found`. Background tasks are process-local; restarting PAL invalidates unfinished task IDs.
+
+If the task reaches the 600-second total execution limit, `consensus_status` returns `failed`. The failed status remains queryable for the configured result-retention TTL.
 
 ## Watch In Action
 
@@ -63,7 +102,9 @@ Get a consensus from gemini supporting the idea for implementing X, grok opposin
 - **Ethical guardrails**: Models will refuse to support truly bad ideas regardless of assigned stance
 - **Unknown stance handling**: Invalid stances automatically default to neutral with warning
 - **Natural language support**: Use terms like "supportive", "critical", "oppose", "favor" - all handled intelligently
-- **Sequential processing**: Reliable execution avoiding MCP protocol issues
+- **Bounded parallel processing**: Consult up to three independent models concurrently
+- **Stable ordering**: Responses are returned in the same order as the `models` input
+- **Background fallback**: Slow requests return a queryable task ID instead of exhausting the MCP call window
 - **Focus areas**: Specify particular aspects to emphasize (e.g., 'security', 'performance', 'user experience')
 - **File context support**: Include relevant files for informed decision-making
 - **Image support**: Analyze architectural diagrams, UI mockups, or design documents
@@ -72,14 +113,24 @@ Get a consensus from gemini supporting the idea for implementing X, grok opposin
 
 ## Tool Parameters
 
-- `prompt`: Detailed description of the proposal or decision to analyze (required)
+- `step`: Exact proposal or decision every model should analyze (required)
+- `step_number`: Use `1`; all models are consulted in the first call
+- `total_steps`: Use `1`
+- `next_step_required`: Use `false`
+- `findings`: The calling agent's independent analysis for final synthesis
 - `models`: List of model configurations with optional stance and custom instructions (required)
-- `files`: Context files for informed analysis (absolute paths)
+- `relevant_files`: Context files for informed analysis (absolute paths)
 - `images`: Visual references like diagrams or mockups (absolute paths)
-- `focus_areas`: Specific aspects to emphasize
-- `temperature`: Control consistency (default: 0.2 for stable consensus)
-- `thinking_mode`: Analysis depth (minimal/low/medium/high/max)
 - `continuation_id`: Continue previous consensus discussions
+
+Optional environment variables:
+
+```dotenv
+CONSENSUS_MAX_CONCURRENCY=3
+CONSENSUS_SYNC_WAIT_SECONDS=240
+CONSENSUS_BACKGROUND_WAIT_SECONDS=360
+CONSENSUS_TASK_TTL_SECONDS=10800
+```
 
 ## Model Configuration Examples
 

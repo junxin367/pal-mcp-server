@@ -157,10 +157,9 @@ The `allow_code_generation` capability enables models to generate complete, prod
 DEFAULT_THINKING_MODE_THINKDEEP=high
 
 # Available modes and token consumption:
-#   minimal: 128 tokens   - Quick analysis, fastest response
-#   low:     2,048 tokens - Light reasoning tasks  
 #   medium:  8,192 tokens - Balanced reasoning
 #   high:    16,384 tokens - Complex analysis (recommended for thinkdeep)
+#   xhigh:   Provider-defined extended reasoning above high
 #   max:     32,768 tokens - Maximum reasoning depth
 ```
 

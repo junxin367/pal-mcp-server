@@ -17,12 +17,14 @@ from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
+THINKING_MODES = ("medium", "high", "xhigh", "max")
+
 
 # Shared field descriptions to avoid duplication
 COMMON_FIELD_DESCRIPTIONS = {
     "model": "Model to run. Supply a name if requested by the user or stay in auto mode. When in auto mode, use `listmodels` tool for model discovery.",
     "temperature": "0 = deterministic · 1 = creative.",
-    "thinking_mode": "Reasoning depth: minimal, low, medium, high, or max.",
+    "thinking_mode": "Reasoning depth: medium, high, xhigh, or max.",
     "continuation_id": (
         "Unique thread continuation ID for multi-turn conversations. Works across different tools. "
         "ALWAYS reuse the last continuation_id you were given—this preserves full conversation context, "
@@ -76,6 +78,15 @@ class ToolRequest(BaseModel):
 
     # Visual context
     images: Optional[list[str]] = Field(None, description=COMMON_FIELD_DESCRIPTIONS["images"])
+
+    @field_validator("thinking_mode")
+    @classmethod
+    def validate_thinking_mode(cls, value: Optional[str]) -> Optional[str]:
+        """Reject reasoning levels that are not exposed by the MCP contract."""
+        if value is not None and value not in THINKING_MODES:
+            allowed = ", ".join(THINKING_MODES)
+            raise ValueError(f"thinking_mode must be one of: {allowed}")
+        return value
 
 
 class BaseWorkflowRequest(ToolRequest):

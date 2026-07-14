@@ -69,11 +69,9 @@ class TestModelResolutionBug:
 
         # Mock the get_model_provider to return our mock
         with patch.object(self.consensus_tool, "get_model_provider", return_value=mock_provider):
-            # Set initial prompt
-            self.consensus_tool.initial_prompt = "Test prompt"
-
             # Create a mock request
             request = Mock()
+            request.step = "Test prompt"
             request.relevant_files = []
             request.continuation_id = None
             request.images = None

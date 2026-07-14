@@ -266,6 +266,10 @@ class SimpleTool(BaseTool):
         except AttributeError:
             return []
 
+    async def _generate_model_response(self, provider, **kwargs):
+        """Generate one provider response; subclasses may make synchronous providers non-blocking."""
+        return provider.generate_content(**kwargs)
+
     async def execute(self, arguments: dict[str, Any]) -> list:
         """
         Execute the simple tool using the comprehensive flow from old base.py.
@@ -442,7 +446,8 @@ class SimpleTool(BaseTool):
             supports_thinking = capabilities.supports_extended_thinking
 
             # Generate content with provider abstraction
-            model_response = provider.generate_content(
+            model_response = await self._generate_model_response(
+                provider,
                 prompt=prompt,
                 model_name=self._current_model_name,
                 system_prompt=system_prompt,
@@ -500,7 +505,8 @@ class SimpleTool(BaseTool):
                         retry_prompt = f"{original_prompt}\n\nIMPORTANT: Please provide a substantive response. If you cannot respond to the above request, please explain why and suggest alternatives."
 
                         try:
-                            retry_response = provider.generate_content(
+                            retry_response = await self._generate_model_response(
+                                provider,
                                 prompt=retry_prompt,
                                 model_name=self._current_model_name,
                                 system_prompt=system_prompt,

@@ -19,8 +19,8 @@ CASSETTE_DIR.mkdir(exist_ok=True)
 
 # Mapping of OpenAI model names to their cassette files
 CONSENSUS_CASSETTES = {
-    "gpt-5": CASSETTE_DIR / "consensus_step1_gpt5_for.json",
-    "gpt-5.2": CASSETTE_DIR / "consensus_step1_gpt52_for.json",
+    "gpt-5.5": CASSETTE_DIR / "consensus_step1_gpt55_for.json",
+    "gpt-5.4": CASSETTE_DIR / "consensus_step1_gpt54_for.json",
 }
 
 GEMINI_REPLAY_DIR = Path(__file__).parent / "gemini_cassettes"
@@ -29,14 +29,26 @@ GEMINI_REPLAY_ID = "consensus/step2_gemini25_flash_against/mldev"
 GEMINI_REPLAY_PATH = GEMINI_REPLAY_DIR / "consensus" / "step2_gemini25_flash_against" / "mldev.json"
 
 
+def test_consensus_recording_models_match_current_openai_catalog(monkeypatch):
+    """Keep recorded Consensus model parameters aligned with the built-in OpenAI catalogue."""
+    from providers.openai import OpenAIModelProvider
+
+    with monkeypatch.context() as m:
+        m.delenv("OPENAI_MODELS_CONFIG_PATH", raising=False)
+        OpenAIModelProvider.reload_registry()
+
+        assert set(CONSENSUS_CASSETTES) == {"gpt-5.5", "gpt-5.4"}
+        assert set(CONSENSUS_CASSETTES).issubset(OpenAIModelProvider.MODEL_CAPABILITIES)
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.no_mock_provider
-@pytest.mark.parametrize("openai_model", ["gpt-5", "gpt-5.2"])
+@pytest.mark.parametrize("openai_model", ["gpt-5.5", "gpt-5.4"])
 async def test_consensus_multi_model_consultations(monkeypatch, openai_model):
     """Exercise ConsensusTool against OpenAI model (supporting) and gemini-2.5-flash (critical).
 
-    Tests both gpt-5 and gpt-5.2 to ensure regression coverage for both model families.
+    Tests the current and previous OpenAI flagship models from conf/openai_models.json.
     """
 
     # Get the cassette path for this model
@@ -120,12 +132,12 @@ async def test_consensus_multi_model_consultations(monkeypatch, openai_model):
             {"model": "gemini-2.5-flash", "stance": "against"},
         ]
 
-        # Step 1: CLI agent analysis followed by first model consultation
+        # Step 1 consults both independent models in parallel.
         step1_arguments = {
             "step": "Evaluate SwiftUI vs UIKit adoption and recommend ONE word (SwiftUI or UIKit).",
             "step_number": 1,
-            "total_steps": len(models_to_consult),
-            "next_step_required": True,
+            "total_steps": 1,
+            "next_step_required": False,
             "findings": "SwiftUI momentum is strong but UIKit remains battle-tested.",
             "models": models_to_consult,
         }
@@ -134,48 +146,27 @@ async def test_consensus_multi_model_consultations(monkeypatch, openai_model):
         assert step1_response and step1_response[0].type == "text"
         step1_data = json.loads(step1_response[0].text)
 
-        assert step1_data["status"] == "analysis_and_first_model_consulted"
-        assert step1_data["model_consulted"] == openai_model
-        assert step1_data["model_response"]["status"] == "success"
-        assert step1_data["model_response"]["metadata"]["provider"] == "openai"
-        assert step1_data["model_response"]["verdict"]
+        assert step1_data["status"] == "consensus_workflow_complete"
+        assert step1_data["consensus_complete"] is True
+        assert step1_data["next_step_required"] is False
+        assert [response["model"] for response in step1_data["model_responses"]] == [
+            openai_model,
+            "gemini-2.5-flash",
+        ]
+        assert step1_data["model_responses"][0]["status"] == "success"
+        assert step1_data["model_responses"][0]["metadata"]["provider"] == "openai"
+        assert step1_data["model_responses"][1]["status"] == "success"
+        assert step1_data["model_responses"][1]["metadata"]["provider"] == "google"
+        assert all(response["verdict"] for response in step1_data["model_responses"])
+        assert step1_data["complete_consensus"]["models_consulted"] == [
+            f"{openai_model}:for",
+            "gemini-2.5-flash:against",
+        ]
 
         continuation_offer = step1_data.get("continuation_offer")
         assert continuation_offer is not None
         continuation_id = continuation_offer["continuation_id"]
-
-        # Prepare step 2 inputs using the first model's response summary
-        summary_for_step2 = step1_data["model_response"]["verdict"][:200]
-
-        step2_arguments = {
-            "step": f"Incorporated {openai_model} perspective: {summary_for_step2}",
-            "step_number": 2,
-            "total_steps": len(models_to_consult),
-            "next_step_required": False,
-            "findings": "Ready to gather opposing stance before synthesis.",
-            "continuation_id": continuation_id,
-            "current_model_index": step1_data.get("current_model_index", 1),
-            "model_responses": step1_data.get("model_responses", []),
-        }
-
-        step2_response = await tool.execute(step2_arguments)
-
-    assert step2_response and step2_response[0].type == "text"
-    step2_data = json.loads(step2_response[0].text)
-
-    assert step2_data["status"] == "consensus_workflow_complete"
-    assert step2_data["model_consulted"] == "gemini-2.5-flash"
-    assert step2_data["model_response"]["metadata"]["provider"] == "google"
-    assert step2_data["model_response"]["verdict"]
-    assert step2_data["complete_consensus"]["models_consulted"] == [
-        f"{openai_model}:for",
-        "gemini-2.5-flash:against",
-    ]
-    assert step2_data["consensus_complete"] is True
-
-    continuation_offer_final = step2_data.get("continuation_offer")
-    assert continuation_offer_final is not None
-    assert continuation_offer_final["continuation_id"] == continuation_id
+        assert continuation_id
 
     # Ensure Gemini replay session is flushed to disk before verification
     gemini_provider = ModelProviderRegistry.get_provider_for_model("gemini-2.5-flash")
@@ -250,8 +241,8 @@ async def test_consensus_auto_mode_with_openrouter_and_gemini(monkeypatch):
         step1_args = {
             "step": "Evaluate framework options.",
             "step_number": 1,
-            "total_steps": len(models_to_consult),
-            "next_step_required": True,
+            "total_steps": 1,
+            "next_step_required": False,
             "findings": "Initial analysis requested.",
             "models": models_to_consult,
         }
@@ -260,35 +251,19 @@ async def test_consensus_auto_mode_with_openrouter_and_gemini(monkeypatch):
         assert step1_output and step1_output[0].type == "text"
         step1_payload = json.loads(step1_output[0].text)
 
-        assert step1_payload["status"] == "analysis_and_first_model_consulted"
-        assert step1_payload["model_consulted"] == "claude-3-5-flash-20241022"
-        assert step1_payload["model_response"]["status"] == "error"
-        assert "claude-3-5-flash-20241022" in step1_payload["model_response"]["error"]
-
-        continuation_offer = step1_payload.get("continuation_offer")
-        assert continuation_offer is not None
-        continuation_id = continuation_offer["continuation_id"]
-
-        step2_args = {
-            "step": "Continue consultation sequence.",
-            "step_number": 2,
-            "total_steps": len(models_to_consult),
-            "next_step_required": False,
-            "findings": "Ready for next model.",
-            "continuation_id": continuation_id,
-            "models": models_to_consult,
-        }
-
         try:
-            step2_output = await server.handle_call_tool("consensus", step2_args)
+            assert step1_payload["consensus_complete"] is True
+            assert [response["model"] for response in step1_payload["model_responses"]] == [
+                "claude-3-5-flash-20241022",
+                "gpt-5-mini",
+            ]
+            assert step1_payload["model_responses"][0]["status"] == "error"
+            assert "claude-3-5-flash-20241022" in step1_payload["model_responses"][0]["error"]
         finally:
             # Reset provider registry regardless of outcome to avoid cross-test bleed
             ModelProviderRegistry.reset_for_testing()
 
-    assert step2_output and step2_output[0].type == "text"
-    step2_payload = json.loads(step2_output[0].text)
-
-    serialized = json.dumps(step2_payload)
+    serialized = json.dumps(step1_payload)
     assert "auto" not in serialized.lower(), "Auto model leakage should be resolved"
     assert "gpt-5-mini" in serialized or "claude-3-5-flash-20241022" in serialized
 

@@ -246,6 +246,7 @@ class ModelProvider(ABC):
         max_attempts: int,
         delays: Optional[list[float]] = None,
         log_prefix: str = "",
+        deadline_monotonic: float | None = None,
     ):
         """Execute ``operation`` with retry semantics.
 
@@ -254,6 +255,7 @@ class ModelProvider(ABC):
             max_attempts: Maximum number of attempts (>=1).
             delays: Optional list of sleep durations between attempts.
             log_prefix: Optional identifier for log clarity.
+            deadline_monotonic: Optional absolute deadline shared by all attempts.
 
         Returns:
             Whatever ``operation`` returns.
@@ -270,11 +272,16 @@ class ModelProvider(ABC):
         last_exc: Optional[Exception] = None
 
         for attempt_index in range(attempts):
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                raise TimeoutError(f"{log_prefix or self.__class__.__name__} request deadline exceeded")
             try:
                 return operation()
             except Exception as exc:  # noqa: BLE001 - bubble exact provider errors
                 last_exc = exc
                 attempt_number = attempt_index + 1
+
+                if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                    raise
 
                 # Decide whether to retry based on subclass hook
                 retryable = self._is_error_retryable(exc)
@@ -283,6 +290,10 @@ class ModelProvider(ABC):
 
                 delay_idx = min(attempt_index, len(delays) - 1) if delays else -1
                 delay = delays[delay_idx] if delay_idx >= 0 else 0.0
+                if deadline_monotonic is not None:
+                    delay = min(delay, max(deadline_monotonic - time.monotonic(), 0.0))
+                    if delay <= 0:
+                        raise
 
                 if delay > 0:
                     logger.warning(

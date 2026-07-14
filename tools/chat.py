@@ -6,9 +6,14 @@ brainstorming, problem-solving, and collaborative thinking. It supports file con
 images, and conversation continuation for seamless multi-turn interactions.
 """
 
+import asyncio
+import copy
+import json
 import logging
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -18,9 +23,17 @@ if TYPE_CHECKING:
     from providers.shared import ModelCapabilities
     from tools.models import ToolModelCategory
 
-from config import TEMPERATURE_BALANCED
+from mcp.types import TextContent
+
+from config import (
+    CHAT_BACKGROUND_WAIT_SECONDS,
+    CHAT_SYNC_WAIT_SECONDS,
+    DEFAULT_MODEL,
+    TEMPERATURE_BALANCED,
+)
 from systemprompts import CHAT_PROMPT, GENERATE_CODE_PROMPT
-from tools.shared.base_models import COMMON_FIELD_DESCRIPTIONS, ToolRequest
+from tools.shared.base_models import COMMON_FIELD_DESCRIPTIONS, THINKING_MODES, ToolRequest
+from utils.chat_tasks import TASK_FAILED, get_chat_task_manager
 
 from .simple.base import SimpleTool
 
@@ -65,6 +78,8 @@ class ChatTool(SimpleTool):
     Chat tool with 100% behavioral compatibility.
     """
 
+    _artifact_write_lock = threading.Lock()
+
     def __init__(self) -> None:
         super().__init__()
         self._last_recordable_response: Optional[str] = None
@@ -105,6 +120,104 @@ class ChatTool(SimpleTool):
         """Return the Chat-specific request model"""
         return ChatRequest
 
+    async def execute(self, arguments: dict[str, Any]) -> list[TextContent]:
+        """Run Chat synchronously first, then leave slow requests running in the background."""
+        model_name = str(arguments.get("_resolved_model_name") or arguments.get("model") or DEFAULT_MODEL)
+        manager = get_chat_task_manager()
+        task_id = manager.create_record(model_name)
+        total_timeout_seconds = CHAT_SYNC_WAIT_SECONDS + CHAT_BACKGROUND_WAIT_SECONDS
+
+        worker = self._create_worker()
+        worker._request_deadline_monotonic = time.monotonic() + total_timeout_seconds
+        execution_lease = arguments.get("_chat_execution_lease")
+
+        async def run_worker() -> list[TextContent]:
+            try:
+                return await worker._execute_once(dict(arguments))
+            finally:
+                if execution_lease is not None:
+                    execution_lease.release()
+
+        manager.start(
+            task_id,
+            run_worker(),
+            timeout_seconds=total_timeout_seconds,
+        )
+        if execution_lease is not None:
+            execution_lease.transfer()
+
+        try:
+            result = await manager.wait(task_id, CHAT_SYNC_WAIT_SECONDS)
+        except asyncio.CancelledError:
+            manager.discard(task_id)
+            raise
+        if result is not None:
+            snapshot = manager.get_snapshot(task_id)
+            exception = manager.get_exception(task_id) if snapshot["status"] == TASK_FAILED else None
+            manager.discard(task_id)
+            if exception is not None:
+                raise exception
+            self._adopt_worker_state(worker)
+            return result
+
+        manager.mark_exposed(task_id)
+        if execution_lease is not None:
+            execution_lease.bind_task(task_id)
+        snapshot = manager.get_snapshot(task_id)
+        response_data = {
+            "status": "chat_in_progress",
+            "task_id": task_id,
+            "model": model_name,
+            "background_wait_seconds": CHAT_BACKGROUND_WAIT_SECONDS,
+            "total_timeout_seconds": total_timeout_seconds,
+            "next_steps": (
+                "请调用 chat_status，并传入此 task_id 查询进度或获取最终结果。"
+                f"任务从开始计算最多运行 {total_timeout_seconds:g} 秒，"
+                f"返回 task_id 后还可后台运行 {CHAT_BACKGROUND_WAIT_SECONDS:g} 秒。"
+                "不要重新发起相同的 chat 请求。"
+            ),
+        }
+        if snapshot.get("status") == TASK_FAILED:
+            response_data["status"] = "chat_failed"
+            response_data["error"] = snapshot.get("error", "Chat 任务执行失败")
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(response_data, indent=2, ensure_ascii=False),
+            )
+        ]
+
+    async def _execute_once(self, arguments: dict[str, Any]) -> list[TextContent]:
+        """Execute the original SimpleTool Chat flow without creating another background task."""
+        return await super().execute(arguments)
+
+    def _create_worker(self) -> "ChatTool":
+        """Clone this instance while clearing request-scoped mutable state."""
+        worker = copy.copy(self)
+        for attribute in [
+            "_current_arguments",
+            "_current_model_name",
+            "_model_context",
+            "_actually_processed_files",
+            "_request_deadline_monotonic",
+        ]:
+            worker.__dict__.pop(attribute, None)
+        worker._last_recordable_response = None
+        return worker
+
+    def _adopt_worker_state(self, worker: "ChatTool") -> None:
+        """Preserve synchronous-call observability expected by existing integrations."""
+        if hasattr(worker, "_actually_processed_files"):
+            self._actually_processed_files = list(worker._actually_processed_files)
+
+    async def _generate_model_response(self, provider, **kwargs):
+        """Run the synchronous provider call outside the MCP event loop."""
+        request_deadline = getattr(self, "_request_deadline_monotonic", None)
+        if request_deadline is not None:
+            kwargs["request_deadline_monotonic"] = request_deadline
+        return await asyncio.to_thread(provider.generate_content, **kwargs)
+
     # === Schema Generation Utilities ===
 
     def get_input_schema(self) -> dict[str, Any]:
@@ -144,7 +257,7 @@ class ChatTool(SimpleTool):
                 },
                 "thinking_mode": {
                     "type": "string",
-                    "enum": ["minimal", "low", "medium", "high", "max"],
+                    "enum": list(THINKING_MODES),
                     "description": COMMON_FIELD_DESCRIPTIONS["thinking_mode"],
                 },
                 "continuation_id": {
@@ -340,14 +453,14 @@ class ChatTool(SimpleTool):
             raise FileNotFoundError(f"Absolute working directory path '{working_directory}' does not exist")
 
         target_file = target_dir / "pal_generated.code"
-        if target_file.exists():
-            try:
-                target_file.unlink()
-            except OSError as exc:
-                logger.warning("Unable to remove existing pal_generated.code: %s", exc)
-
         content = block if block.endswith("\n") else f"{block}\n"
-        target_file.write_text(content, encoding="utf-8")
+        with self._artifact_write_lock:
+            if target_file.exists():
+                try:
+                    target_file.unlink()
+                except OSError as exc:
+                    logger.warning("Unable to remove existing pal_generated.code: %s", exc)
+            target_file.write_text(content, encoding="utf-8")
         logger.info("Generated code artifact written to %s", target_file)
         return target_file
 

@@ -20,6 +20,7 @@ as defined by the MCP protocol.
 
 import asyncio
 import atexit
+import json
 import logging
 import os
 import sys
@@ -50,9 +51,11 @@ from config import (  # noqa: E402
 from tools import (  # noqa: E402
     AnalyzeTool,
     ChallengeTool,
+    ChatStatusTool,
     ChatTool,
     CLinkTool,
     CodeReviewTool,
+    ConsensusStatusTool,
     ConsensusTool,
     DebugIssueTool,
     DocgenTool,
@@ -210,8 +213,18 @@ def apply_tool_filter(all_tools: dict[str, Any], disabled_tools: set[str]) -> di
         Dictionary containing only enabled tools
     """
     enabled_tools = {}
+    status_tool_dependencies = {
+        "chat_status": "chat",
+        "consensus_status": "consensus",
+    }
     for tool_name, tool_instance in all_tools.items():
-        if tool_name in ESSENTIAL_TOOLS or tool_name not in disabled_tools:
+        if tool_name in status_tool_dependencies:
+            parent_tool = status_tool_dependencies[tool_name]
+            if parent_tool not in disabled_tools:
+                enabled_tools[tool_name] = tool_instance
+            else:
+                logger.debug("Tool '%s' disabled together with '%s'", tool_name, parent_tool)
+        elif tool_name in ESSENTIAL_TOOLS or tool_name not in disabled_tools:
             enabled_tools[tool_name] = tool_instance
         else:
             logger.debug(f"Tool '{tool_name}' disabled via DISABLED_TOOLS")
@@ -260,10 +273,12 @@ def filter_disabled_tools(all_tools: dict[str, Any]) -> dict[str, Any]:
 # Tools are instantiated once and reused across requests (stateless design)
 TOOLS = {
     "chat": ChatTool(),  # Interactive development chat and brainstorming
+    "chat_status": ChatStatusTool(),  # Background Chat task lookup
     "clink": CLinkTool(),  # Bridge requests to configured AI CLIs
     "thinkdeep": ThinkDeepTool(),  # Step-by-step deep thinking workflow with expert analysis
     "planner": PlannerTool(),  # Interactive sequential planner using workflow architecture
-    "consensus": ConsensusTool(),  # Step-by-step consensus workflow with multi-model analysis
+    "consensus": ConsensusTool(),  # Parallel multi-model consensus analysis
+    "consensus_status": ConsensusStatusTool(),  # Background consensus task lookup
     "codereview": CodeReviewTool(),  # Comprehensive step-by-step code review workflow with expert analysis
     "precommit": PrecommitTool(),  # Step-by-step pre-commit validation workflow
     "debug": DebugIssueTool(),  # Root cause analysis and debugging assistance
@@ -304,8 +319,8 @@ PROMPT_TEMPLATES = {
     },
     "consensus": {
         "name": "consensus",
-        "description": "Step-by-step consensus workflow with multi-model analysis",
-        "template": "Start comprehensive consensus workflow with {model}",
+        "description": "Parallel consensus workflow with independent multi-model analysis",
+        "template": "Start a parallel consensus workflow with the selected models",
     },
     "codereview": {
         "name": "review",
@@ -691,6 +706,49 @@ async def handle_list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    """Serialize Chat continuations before reconstructing shared conversation state."""
+    execution_lease = None
+    continuation_id = arguments.get("continuation_id")
+    if name in TOOLS and not name.endswith("_status") and continuation_id:
+        from utils.chat_tasks import get_chat_task_manager
+
+        execution_lease, active_operation = await get_chat_task_manager().try_acquire_execution_lease(
+            f"continuation:{continuation_id}",
+            owner_tool=name,
+        )
+        if execution_lease is None:
+            task_id = active_operation.get("task_id")
+            response_data = {
+                "status": "conversation_in_progress",
+                "continuation_id": continuation_id,
+                "active_tool": active_operation.get("owner_tool"),
+                "task_id": task_id,
+                "next_steps": (
+                    "同一个 continuation_id 当前已有请求正在执行，请等待其完成后再继续该会话。"
+                    + (
+                        "如返回了 task_id，请使用对应的状态查询工具获取结果。"
+                        if task_id
+                        else "当前请求尚未生成可查询的 task_id，请稍后重试。"
+                    )
+                ),
+            }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(response_data, indent=2, ensure_ascii=False),
+                )
+            ]
+        arguments = dict(arguments)
+        arguments["_chat_execution_lease"] = execution_lease
+
+    try:
+        return await _handle_call_tool_impl(name, arguments)
+    finally:
+        if execution_lease is not None:
+            execution_lease.release_if_untransferred()
+
+
+async def _handle_call_tool_impl(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """
     Handle incoming tool execution requests from MCP clients.
 

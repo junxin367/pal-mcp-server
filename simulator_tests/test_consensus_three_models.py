@@ -1,6 +1,4 @@
-"""
-Test consensus tool with three models demonstrating sequential processing
-"""
+"""验证三个模型的受限并行 Consensus。"""
 
 import json
 
@@ -8,7 +6,7 @@ from .base_test import BaseSimulatorTest
 
 
 class TestConsensusThreeModels(BaseSimulatorTest):
-    """Test consensus tool functionality with three models (testing sequential processing)"""
+    """验证三个模型在单次调用中完成，并保持输入顺序。"""
 
     @property
     def test_name(self) -> str:
@@ -16,130 +14,87 @@ class TestConsensusThreeModels(BaseSimulatorTest):
 
     @property
     def test_description(self) -> str:
-        return "Test consensus tool with three models using flash:against, flash:for, local-llama:neutral"
+        return "验证 flash:against、flash:for、local-llama:neutral 的单次并行 Consensus"
 
     def run_test(self) -> bool:
-        """Run three-model consensus test"""
+        """运行三个模型的 Consensus 场景。"""
         try:
-            self.logger.info("Testing consensus tool with three models: flash:against, flash:for, local-llama:neutral")
-
-            # Send request with three objects using new workflow parameters
-            response, continuation_id = self.call_mcp_tool(
+            models = [
+                {
+                    "model": "flash",
+                    "stance": "against",
+                    "stance_prompt": (
+                        "You are a software architecture critic. Focus on complexity overhead, "
+                        "maintenance burden, over-engineering, and simpler alternatives."
+                    ),
+                },
+                {
+                    "model": "flash",
+                    "stance": "for",
+                    "stance_prompt": (
+                        "You are a software architecture advocate. Focus on separation of concerns, "
+                        "testability, maintainability, scalability, and code organization."
+                    ),
+                },
+                {
+                    "model": "local-llama",
+                    "stance": "neutral",
+                    "stance_prompt": (
+                        "You are a pragmatic software engineer. Provide a balanced analysis for a CoolTodos app."
+                    ),
+                },
+            ]
+            response, _ = self.call_mcp_tool(
                 "consensus",
                 {
                     "step": "Is a sync manager class a good idea for my CoolTodos app?",
                     "step_number": 1,
-                    "total_steps": 3,  # 3 models = 3 steps
-                    "next_step_required": True,
-                    "findings": "Initial analysis needed on sync manager class architecture decision for CoolTodos app",
-                    "models": [
-                        {
-                            "model": "flash",
-                            "stance": "against",
-                            "stance_prompt": "You are a software architecture critic. Focus on the potential downsides of adding a sync manager class: complexity overhead, maintenance burden, potential for over-engineering, and whether simpler alternatives exist. Consider if this adds unnecessary abstraction layers.",
-                        },
-                        {
-                            "model": "flash",
-                            "stance": "for",
-                            "stance_prompt": "You are a software architecture advocate. Focus on the benefits of a sync manager class: separation of concerns, testability, maintainability, and how it can improve the overall architecture. Consider scalability and code organization advantages.",
-                        },
-                        {
-                            "model": "local-llama",
-                            "stance": "neutral",
-                            "stance_prompt": "You are a pragmatic software engineer. Provide a balanced analysis considering both the benefits and drawbacks. Focus on the specific context of a CoolTodos app and what factors would determine if this is the right choice.",
-                        },
-                    ],
-                    "model": "flash",  # Default model for Claude's execution
+                    "total_steps": 1,
+                    "next_step_required": False,
+                    "findings": "Initial analysis of the sync manager architecture decision.",
+                    "models": models,
                 },
             )
 
-            # Validate response
             if not response:
-                self.logger.error("Failed to get response from three-model consensus tool")
+                self.logger.error("三个模型的 Consensus 未返回响应")
                 return False
 
-            self.logger.info(f"Three-model consensus response preview: {response[:500]}...")
-
-            # Parse the JSON response
-            try:
-                consensus_data = json.loads(response)
-            except json.JSONDecodeError:
-                self.logger.error(f"Failed to parse three-model consensus response as JSON: {response}")
+            data = json.loads(response)
+            if data.get("status") not in {"consensus_workflow_complete", "consensus_failed"}:
+                self.logger.error("Consensus 返回了非终态：%s", data.get("status"))
                 return False
 
-            # Validate consensus structure
-            if "status" not in consensus_data:
-                self.logger.error("Missing 'status' field in three-model consensus response")
+            if data.get("next_step_required") or not data.get("consensus_complete"):
+                self.logger.error("三个模型的 Consensus 应在第 1 步直接完成")
                 return False
 
-            # Check for step 1 status (Claude analysis + first model consultation)
-            expected_status = "analysis_and_first_model_consulted"
-            if consensus_data["status"] != expected_status:
-                self.logger.error(
-                    f"Three-model consensus step 1 failed with status: {consensus_data['status']}, expected: {expected_status}"
-                )
-
-                # Log additional error details for debugging
-                if "error" in consensus_data:
-                    self.logger.error(f"Error message: {consensus_data['error']}")
-                if "models_errored" in consensus_data:
-                    self.logger.error(f"Models that errored: {consensus_data['models_errored']}")
-                if "models_skipped" in consensus_data:
-                    self.logger.error(f"Models skipped: {consensus_data['models_skipped']}")
-                if "next_steps" in consensus_data:
-                    self.logger.error(f"Suggested next steps: {consensus_data['next_steps']}")
-
+            responses = data.get("model_responses", [])
+            if len(responses) != len(models):
+                self.logger.error("期望 %s 个响应，实际为 %s", len(models), len(responses))
                 return False
 
-            # Check that we have model response from step 1
-            model_response = consensus_data.get("model_response")
-            if not model_response:
-                self.logger.error("Three-model consensus step 1 response missing model_response")
+            expected_order = [(item["model"], item["stance"]) for item in models]
+            actual_order = [(item.get("model"), item.get("stance")) for item in responses]
+            if actual_order != expected_order:
+                self.logger.error("模型顺序错误，期望 %s，实际 %s", expected_order, actual_order)
                 return False
 
-            # Check that model response has expected structure
-            if not model_response.get("model") or not model_response.get("verdict"):
-                self.logger.error("Model response missing required fields (model or verdict)")
+            if any(item.get("status") not in {"success", "error"} for item in responses):
+                self.logger.error("模型响应包含未知状态：%s", responses)
                 return False
 
-            # Check step information
-            if consensus_data.get("step_number") != 1:
-                self.logger.error(f"Expected step_number 1, got: {consensus_data.get('step_number')}")
+            if data.get("successful_responses", 0) + data.get("failed_responses", 0) != len(models):
+                self.logger.error("成功/失败计数与模型总数不一致")
                 return False
 
-            if not consensus_data.get("next_step_required"):
-                self.logger.error("Expected next_step_required=True for step 1")
+            metadata = data.get("metadata", {})
+            if metadata.get("total_models") != len(models):
+                self.logger.error("metadata.total_models 错误：%s", metadata)
                 return False
 
-            self.logger.info(f"Consensus step 1 consulted model: {model_response.get('model')}")
-            self.logger.info(f"Model stance: {model_response.get('stance', 'neutral')}")
-            self.logger.info(f"Response status: {model_response.get('status', 'unknown')}")
-
-            # Check metadata contains model name
-            metadata = consensus_data.get("metadata", {})
-            if not metadata.get("model_name"):
-                self.logger.error("Missing model_name in metadata")
-                return False
-
-            self.logger.info(f"Model name in metadata: {metadata.get('model_name')}")
-
-            # Verify we have analysis from Claude
-            agent_analysis = consensus_data.get("agent_analysis")
-            if not agent_analysis:
-                self.logger.error("Missing Claude's analysis in step 1")
-                return False
-
-            analysis_text = agent_analysis.get("initial_analysis", "")
-            self.logger.info(f"Claude analysis length: {len(analysis_text)} characters")
-
-            self.logger.info("✓ Three-model consensus tool test completed successfully")
-            self.logger.info(f"✓ Step 1 completed with model: {model_response.get('model')}")
-            self.logger.info(f"✓ Analysis provided: {len(analysis_text)} characters")
-            self.logger.info(f"✓ Model metadata properly included: {metadata.get('model_name')}")
-            self.logger.info("✓ Ready for step 2 continuation")
-
+            self.logger.info("✓ 三个模型已在单次调用中完成并保持输入顺序")
             return True
-
-        except Exception as e:
-            self.logger.error(f"Three-model consensus test failed with exception: {str(e)}")
+        except Exception as exc:
+            self.logger.exception("三个模型的 Consensus 测试失败：%s", exc)
             return False

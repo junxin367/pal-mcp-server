@@ -3,6 +3,7 @@
 import copy
 import ipaddress
 import logging
+import time
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -395,6 +396,7 @@ class OpenAICompatibleProvider(ModelProvider):
         **kwargs,
     ) -> ModelResponse:
         """Generate content using the /v1/responses endpoint for reasoning models."""
+        request_deadline = kwargs.pop("request_deadline_monotonic", None)
         # Convert messages to the correct format for responses endpoint
         input_messages = []
 
@@ -453,7 +455,9 @@ class OpenAICompatibleProvider(ModelProvider):
                 f"o3-pro API request (sanitized): {json.dumps(sanitized_params, indent=2, ensure_ascii=False)}"
             )
 
-            response = self.client.responses.create(**completion_params)
+            request_params = self._with_request_deadline(completion_params, request_deadline)
+            request_client = self._client_without_internal_retries(request_deadline)
+            response = request_client.responses.create(**request_params)
 
             content = self._safe_extract_output_text(response)
 
@@ -489,6 +493,7 @@ class OpenAICompatibleProvider(ModelProvider):
                 max_attempts=max_retries,
                 delays=retry_delays,
                 log_prefix="responses endpoint",
+                deadline_monotonic=request_deadline,
             )
         except Exception as exc:
             attempts = max(attempt_counter["value"], 1)
@@ -520,6 +525,7 @@ class OpenAICompatibleProvider(ModelProvider):
         Returns:
             ModelResponse with generated content and metadata
         """
+        request_deadline = kwargs.pop("request_deadline_monotonic", None)
         # Validate model name against allow-list
         if not self.validate_model_name(model_name):
             raise ValueError(f"Model '{model_name}' not in allowed models list. Allowed models: {self.allowed_models}")
@@ -635,6 +641,7 @@ class OpenAICompatibleProvider(ModelProvider):
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
                 capabilities=capabilities,
+                request_deadline_monotonic=request_deadline,
                 **kwargs,
             )
 
@@ -645,7 +652,9 @@ class OpenAICompatibleProvider(ModelProvider):
 
         def _attempt() -> ModelResponse:
             attempt_counter["value"] += 1
-            response = self.client.chat.completions.create(**completion_params)
+            request_params = self._with_request_deadline(completion_params, request_deadline)
+            request_client = self._client_without_internal_retries(request_deadline)
+            response = request_client.chat.completions.create(**request_params)
 
             content = response.choices[0].message.content
             usage = self._extract_usage(response)
@@ -670,6 +679,7 @@ class OpenAICompatibleProvider(ModelProvider):
                 max_attempts=max_retries,
                 delays=retry_delays,
                 log_prefix=f"{self.FRIENDLY_NAME} API ({resolved_model})",
+                deadline_monotonic=request_deadline,
             )
         except Exception as exc:
             attempts = max(attempt_counter["value"], 1)
@@ -679,6 +689,30 @@ class OpenAICompatibleProvider(ModelProvider):
             )
             logging.error(error_msg)
             raise RuntimeError(error_msg) from exc
+
+    @staticmethod
+    def _with_request_deadline(
+        completion_params: dict,
+        deadline_monotonic: float | None,
+    ) -> dict:
+        """Apply the remaining shared deadline as an OpenAI SDK request timeout."""
+        if deadline_monotonic is None:
+            return completion_params
+
+        remaining_seconds = deadline_monotonic - time.monotonic()
+        if remaining_seconds <= 0:
+            raise TimeoutError("Provider request deadline exceeded")
+
+        request_params = dict(completion_params)
+        request_params["timeout"] = remaining_seconds
+        return request_params
+
+    def _client_without_internal_retries(self, deadline_monotonic: float | None):
+        """Let PAL's deadline-aware retry loop own retries for bounded Chat requests."""
+        client = self.client
+        if deadline_monotonic is not None and hasattr(client, "with_options"):
+            return client.with_options(max_retries=0)
+        return client
 
     def validate_parameters(self, model_name: str, temperature: float, **kwargs) -> None:
         """Validate model parameters.

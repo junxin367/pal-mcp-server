@@ -35,10 +35,9 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
     # Thinking mode configurations - percentages of model's max_thinking_tokens
     # These percentages work across all models that support thinking
     THINKING_BUDGETS = {
-        "minimal": 0.005,  # 0.5% of max - minimal thinking for fast responses
-        "low": 0.08,  # 8% of max - light reasoning tasks
         "medium": 0.33,  # 33% of max - balanced reasoning (default)
         "high": 0.67,  # 67% of max - complex analysis
+        "xhigh": 0.85,  # 85% of max - extended analysis above high
         "max": 1.0,  # 100% of max - full thinking budget
     }
 
@@ -131,7 +130,7 @@ class GeminiModelProvider(RegistryBackedProviderMixin, ModelProvider):
             system_prompt: Optional system instructions to prepend to the prompt for context/behavior
             temperature: Controls randomness in generation (0.0=deterministic, 1.0=creative), default 0.3
             max_output_tokens: Optional maximum number of tokens to generate in the response
-            thinking_mode: Thinking budget level for models that support it ("minimal", "low", "medium", "high", "max"), default "medium"
+            thinking_mode: Thinking budget level for models that support it ("medium", "high", "xhigh", "max"), default "medium"
             images: Optional list of image paths or data URLs to include with the prompt (for vision models)
             **kwargs: Additional keyword arguments (reserved for future use)
 

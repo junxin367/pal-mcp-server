@@ -2,6 +2,7 @@
 Tests for configuration
 """
 
+import config
 from config import (
     DEFAULT_MODEL,
     TEMPERATURE_ANALYTICAL,
@@ -38,3 +39,14 @@ class TestConfig:
         assert TEMPERATURE_ANALYTICAL == 1.0
         assert TEMPERATURE_BALANCED == 1.0
         assert TEMPERATURE_CREATIVE == 1.0
+
+    def test_consensus_background_wait_uses_positive_float_fallback(self, monkeypatch):
+        """Test the additional background wait configuration parser."""
+        monkeypatch.setattr(config, "get_env", lambda name: "360")
+        assert config._get_positive_float_env("CONSENSUS_BACKGROUND_WAIT_SECONDS", 360.0) == 360.0
+
+        monkeypatch.setattr(config, "get_env", lambda name: "0")
+        assert config._get_positive_float_env("CONSENSUS_BACKGROUND_WAIT_SECONDS", 360.0) == 360.0
+
+        monkeypatch.setattr(config, "get_env", lambda name: "invalid")
+        assert config._get_positive_float_env("CONSENSUS_BACKGROUND_WAIT_SECONDS", 360.0) == 360.0

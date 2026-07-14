@@ -1,22 +1,11 @@
-"""
-Consensus tool - Step-by-step multi-model consensus with expert analysis
-
-This tool provides a structured workflow for gathering consensus from multiple models.
-It guides the CLI agent through systematic steps where the CLI agent first provides its own analysis,
-then consults each requested model one by one, and finally synthesizes all perspectives.
-
-Key features:
-- Step-by-step consensus workflow with progress tracking
-- The CLI agent's initial neutral analysis followed by model-specific consultations
-- Context-aware file embedding
-- Support for stance-based analysis (for/against/neutral)
-- Final synthesis combining all perspectives
-"""
+"""Parallel blinded multi-model consensus with synchronous-first background fallback."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field, model_validator
@@ -26,36 +15,41 @@ if TYPE_CHECKING:
 
 from mcp.types import TextContent
 
-from config import TEMPERATURE_ANALYTICAL
+from config import (
+    CONSENSUS_BACKGROUND_WAIT_SECONDS,
+    CONSENSUS_MAX_CONCURRENCY,
+    CONSENSUS_SYNC_WAIT_SECONDS,
+    TEMPERATURE_ANALYTICAL,
+)
 from systemprompts import CONSENSUS_PROMPT
-from tools.shared.base_models import ConsolidatedFindings, WorkflowRequest
-from utils.conversation_memory import MAX_CONVERSATION_TURNS, create_thread, get_thread
+from tools.shared.base_models import WorkflowRequest
+from utils.consensus_tasks import get_consensus_task_manager
+from utils.conversation_memory import MAX_CONVERSATION_TURNS, add_turn, create_thread, get_thread
 
 from .workflow.base import WorkflowTool
 
 logger = logging.getLogger(__name__)
+_PROVIDER_INITIALIZATION_LOCK = threading.Lock()
 
 # Tool-specific field descriptions for consensus workflow
 CONSENSUS_WORKFLOW_FIELD_DESCRIPTIONS = {
     "step": (
-        "Consensus prompt. Step 1: write the exact proposal/question every model will see (use 'Evaluate…', not meta commentary). "
-        "Steps 2+: capture internal notes about the latest model response—these notes are NOT sent to other models."
+        "填写所有模型都要独立评估的原始提案或问题。"
+        "全部模型会在第 1 步并行执行，请直接描述待评估内容，不要填写流程说明。"
     ),
-    "step_number": "Current step index (starts at 1). Step 1 is your analysis; steps 2+ handle each model response.",
-    "total_steps": "Total steps = number of models consulted plus the final synthesis step.",
-    "next_step_required": "True if more model consultations remain; set false when ready to synthesize.",
-    "findings": (
-        "Step 1: your independent analysis for later synthesis (not shared with other models). Steps 2+: summarize the newest model response."
-    ),
-    "relevant_files": "Optional supporting files that help the consensus analysis. Must be absolute full, non-abbreviated paths.",
+    "step_number": "填写 1。并行 Consensus 会在首次调用中咨询全部指定模型。",
+    "total_steps": "填写 1。工具会在一次调用中完成全部模型咨询。",
+    "next_step_required": "填写 false。工具会一起返回全部模型响应，供调用方最终综合。",
+    "findings": "调用方自己的独立分析，仅用于后续综合，不会发送给被咨询模型。",
+    "relevant_files": "可选的分析参考文件，必须使用完整、未缩写的绝对路径。",
     "models": (
-        "User-specified list of models to consult (provide at least two entries). "
-        "Each entry may include model, stance (for/against/neutral), and stance_prompt. "
-        "Each (model, stance) pair must be unique, e.g. [{'model':'gpt5','stance':'for'}, {'model':'pro','stance':'against'}]."
+        "要咨询的模型列表（至少提供两个条目）。每个条目可包含 model、"
+        "stance（for/against/neutral）和 stance_prompt。每组 (model, stance) 必须唯一，"
+        "例如 [{'model':'gpt5','stance':'for'}, {'model':'pro','stance':'against'}]。"
     ),
-    "current_model_index": "0-based index of the next model to consult (managed internally).",
-    "model_responses": "Internal log of responses gathered so far.",
-    "images": "Optional absolute image paths or base64 references that add helpful visual context.",
+    "current_model_index": "兼容旧调用的内部字段；并行 Consensus 会自行管理模型索引。",
+    "model_responses": "兼容旧调用的内部字段；并行 Consensus 会统一返回全部响应。",
+    "images": "可选的绝对图片路径或 base64 引用，用于补充视觉上下文。",
 }
 
 
@@ -107,7 +101,9 @@ class ConsensusRequest(WorkflowRequest):
         """Ensure step 1 has required models field and unique model+stance combinations."""
         if self.step_number == 1:
             if not self.models:
-                raise ValueError("Step 1 requires 'models' field to specify which models to consult")
+                raise ValueError("第 1 步必须通过 'models' 字段指定要咨询的模型")
+            if len(self.models) < 2:
+                raise ValueError("第 1 步至少需要指定 2 个模型")
 
             # Check for unique model + stance combinations
             seen_combinations = set()
@@ -118,8 +114,8 @@ class ConsensusRequest(WorkflowRequest):
 
                 if combination in seen_combinations:
                     raise ValueError(
-                        f"Duplicate model + stance combination found: {model_name} with stance '{stance}'. "
-                        f"Each model + stance combination must be unique."
+                        f"发现重复的 model + stance 组合：{model_name}，stance 为 '{stance}'。"
+                        "每组 model + stance 必须唯一。"
                     )
                 seen_combinations.add(combination)
 
@@ -127,30 +123,15 @@ class ConsensusRequest(WorkflowRequest):
 
 
 class ConsensusTool(WorkflowTool):
-    """
-    Consensus workflow tool for step-by-step multi-model consensus gathering.
-
-    This tool implements a structured consensus workflow where the CLI agent first provides
-    its own neutral analysis, then consults each specified model individually,
-    and finally synthesizes all perspectives into a unified recommendation.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.initial_prompt: str | None = None
-        self.original_proposal: str | None = None  # Store the original proposal separately
-        self.models_to_consult: list[dict] = []
-        self.accumulated_responses: list[dict] = []
-        self._current_arguments: dict[str, Any] = {}
+    """Consult independent models in parallel and return one synthesis-ready result."""
 
     def get_name(self) -> str:
         return "consensus"
 
     def get_description(self) -> str:
         return (
-            "Builds multi-model consensus through systematic analysis and structured debate. "
-            "Use for complex decisions, architectural choices, feature proposals, and technology evaluations. "
-            "Consults multiple models with different stances to synthesize comprehensive recommendations."
+            "通过系统分析和结构化讨论形成多模型共识，适用于复杂决策、架构选型、功能提案和技术评估。"
+            "工具会按不同立场并行咨询相互独立的模型，并统一返回全部观点。"
         )
 
     def get_system_prompt(self) -> str:
@@ -318,32 +299,13 @@ of the evidence, even when it strongly points in one direction.""",
     def get_required_actions(
         self, step_number: int, confidence: str, findings: str, total_steps: int, request=None
     ) -> list[str]:  # noqa: ARG002
-        """Define required actions for each consensus phase.
-
-        Now includes request parameter for continuation-aware decisions.
-        Note: confidence parameter is kept for compatibility with base class but not used.
-        """
-        if step_number == 1:
-            # CLI Agent's initial analysis
-            return [
-                "You've provided your initial analysis. The tool will now consult other models.",
-                "Wait for the next step to receive the first model's response.",
-            ]
-        elif step_number < total_steps - 1:
-            # Processing individual model responses
-            return [
-                "Review the model response provided in this step",
-                "Note key agreements and disagreements with previous analyses",
-                "Wait for the next model's response",
-            ]
-        else:
-            # Ready for final synthesis
-            return [
-                "All models have been consulted",
-                "Synthesize all perspectives into a comprehensive recommendation",
-                "Identify key points of agreement and disagreement",
-                "Provide clear, actionable guidance based on the consensus",
-            ]
+        """Describe the single synthesis phase after parallel consultation."""
+        return [
+            "并行且相互独立地咨询全部指定模型",
+            "将全部返回观点综合为完整建议",
+            "识别主要共识、分歧及其原因",
+            "基于综合结果给出清晰、可执行的建议",
+        ]
 
     def should_call_expert_analysis(self, consolidated_findings, request=None) -> bool:
         """Consensus workflow doesn't use traditional expert analysis - it consults models step by step."""
@@ -387,162 +349,212 @@ of the evidence, even when it strongly points in one direction.""",
         return step_data
 
     async def handle_work_completion(self, response_data: dict, request, arguments: dict) -> dict:  # noqa: ARG002
-        """Handle consensus workflow completion - no expert analysis, just final synthesis."""
+        """Keep compatibility with the base workflow completion hook."""
         response_data["consensus_complete"] = True
         response_data["status"] = "consensus_workflow_complete"
-
-        # Prepare final synthesis data
-        response_data["complete_consensus"] = {
-            "initial_prompt": self.original_proposal if self.original_proposal else self.initial_prompt,
-            "models_consulted": [m["model"] + ":" + m.get("stance", "neutral") for m in self.accumulated_responses],
-            "total_responses": len(self.accumulated_responses),
-            "consensus_confidence": "high",  # Consensus complete
-        }
-
-        response_data["next_steps"] = (
-            "CONSENSUS GATHERING IS COMPLETE. You MUST now synthesize all perspectives and present:\n"
-            "1. Key points of AGREEMENT across models\n"
-            "2. Key points of DISAGREEMENT and why they differ\n"
-            "3. Your final consolidated recommendation\n"
-            "4. Specific, actionable next steps for implementation\n"
-            "5. Critical risks or concerns that must be addressed"
-        )
-
         return response_data
 
     def handle_work_continuation(self, response_data: dict, request) -> dict:
-        """Handle continuation between consensus steps."""
-        current_idx = request.current_model_index or 0
-
-        if request.step_number == 1:
-            # After CLI Agent's initial analysis, prepare to consult first model
-            response_data["status"] = "consulting_models"
-            response_data["next_model"] = self.models_to_consult[0] if self.models_to_consult else None
-            response_data["next_steps"] = (
-                "Your initial analysis is complete. The tool will now consult the specified models."
-            )
-        elif current_idx < len(self.models_to_consult):
-            next_model = self.models_to_consult[current_idx]
-            response_data["status"] = "consulting_next_model"
-            response_data["next_model"] = next_model
-            response_data["models_remaining"] = len(self.models_to_consult) - current_idx
-            response_data["next_steps"] = f"Model consultation in progress. Next: {next_model['model']}"
-        else:
-            response_data["status"] = "ready_for_synthesis"
-            response_data["next_steps"] = "All models consulted. Ready for final synthesis."
-
+        """Parallel consensus has no intermediate model-consultation steps."""
+        response_data["status"] = "consensus_workflow_complete"
+        response_data["consensus_complete"] = True
+        response_data["next_step_required"] = False
         return response_data
 
     async def execute_workflow(self, arguments: dict[str, Any]) -> list:
-        """Override execute_workflow to handle model consultations between steps."""
-
-        # Store arguments
-        self._current_arguments = arguments
-
-        # Validate request
+        """Run all blinded model consultations concurrently during step 1."""
         request = self.get_workflow_request_model()(**arguments)
 
-        # Resolve existing continuation_id or create a new one on first step
+        if request.step_number != 1:
+            response_data = {
+                "status": "consensus_already_completed",
+                "consensus_complete": True,
+                "next_step_required": False,
+                "next_steps": (
+                    "并行 Consensus 已在第 1 步完成全部模型咨询。"
+                    "请使用首次调用结果；如果首次调用返回了 task_id，请调用 consensus_status 查询。"
+                ),
+            }
+            return [TextContent(type="text", text=json.dumps(response_data, indent=2, ensure_ascii=False))]
+
         continuation_id = request.continuation_id
+        if not continuation_id:
+            clean_args = {k: v for k, v in arguments.items() if k not in ["_model_context", "_resolved_model_name"]}
+            continuation_id = create_thread(self.get_name(), clean_args)
+            request.continuation_id = continuation_id
 
-        if request.step_number == 1:
-            if not continuation_id:
-                clean_args = {k: v for k, v in arguments.items() if k not in ["_model_context", "_resolved_model_name"]}
-                continuation_id = create_thread(self.get_name(), clean_args)
-                request.continuation_id = continuation_id
-                arguments["continuation_id"] = continuation_id
-                self.work_history = []
-                self.consolidated_findings = ConsolidatedFindings()
+        models = [dict(model) for model in request.models or []]
+        original_proposal = request.step
+        request.total_steps = 1
+        manager = get_consensus_task_manager()
+        task_id = manager.create_record(models)
+        total_timeout_seconds = CONSENSUS_SYNC_WAIT_SECONDS + CONSENSUS_BACKGROUND_WAIT_SECONDS
+        manager.start(
+            task_id,
+            self._run_parallel_consensus(
+                task_id=task_id,
+                request=request,
+                original_proposal=original_proposal,
+                models=models,
+                continuation_id=continuation_id,
+            ),
+            timeout_seconds=total_timeout_seconds,
+        )
 
-            # Store the original proposal from step 1 - this is what all models should see
-            self.store_initial_issue(request.step)
-            self.initial_request = request.step
-            self.models_to_consult = request.models or []
-            self.accumulated_responses = []
-            # Set total steps: len(models) (each step includes consultation + response)
-            request.total_steps = len(self.models_to_consult)
+        result = await manager.wait(task_id, CONSENSUS_SYNC_WAIT_SECONDS)
+        if result is not None:
+            manager.discard(task_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
 
-        # For all steps (1 through total_steps), consult the corresponding model
-        if request.step_number <= request.total_steps:
-            # Calculate which model to consult for this step
-            model_idx = request.step_number - 1  # 0-based index
+        snapshot = manager.get_snapshot(task_id)
+        response_data = {
+            "status": "consensus_in_progress",
+            "consensus_complete": False,
+            "next_step_required": False,
+            "task_id": task_id,
+            "completed_models": snapshot.get("completed_models", 0),
+            "total_models": snapshot.get("total_models", len(models)),
+            "continuation_id": continuation_id,
+            "background_wait_seconds": CONSENSUS_BACKGROUND_WAIT_SECONDS,
+            "total_timeout_seconds": total_timeout_seconds,
+            "next_steps": (
+                "请调用 consensus_status，并传入此 task_id 查询进度或获取最终结果。"
+                f"任务从开始计算最多运行 {total_timeout_seconds:g} 秒，"
+                f"返回 task_id 后还可后台运行 {CONSENSUS_BACKGROUND_WAIT_SECONDS:g} 秒。"
+            ),
+        }
+        continuation_offer = self._build_continuation_offer(continuation_id)
+        if continuation_offer:
+            response_data["continuation_offer"] = continuation_offer
+        return [TextContent(type="text", text=json.dumps(response_data, indent=2, ensure_ascii=False))]
 
-            if model_idx < len(self.models_to_consult):
-                # Track workflow state for conversation memory
-                step_data = self.prepare_step_data(request)
-                self.work_history.append(step_data)
-                self._update_consolidated_findings(step_data)
+    async def _run_parallel_consensus(
+        self,
+        *,
+        task_id: str,
+        request: ConsensusRequest,
+        original_proposal: str,
+        models: list[dict[str, Any]],
+        continuation_id: str,
+    ) -> dict[str, Any]:
+        """Consult all models with bounded concurrency and stable result ordering."""
+        manager = get_consensus_task_manager()
+        semaphore = asyncio.Semaphore(CONSENSUS_MAX_CONCURRENCY)
 
-                # Consult the model for this step
-                model_response = await self._consult_model(self.models_to_consult[model_idx], request)
-
-                # Add to accumulated responses
-                self.accumulated_responses.append(model_response)
-
-                # Include the model response in the step data
-                response_data = {
-                    "status": "model_consulted",
-                    "step_number": request.step_number,
-                    "total_steps": request.total_steps,
-                    "model_consulted": model_response["model"],
-                    "model_stance": model_response.get("stance", "neutral"),
-                    "model_response": model_response,
-                    "current_model_index": model_idx + 1,
-                    "next_step_required": request.step_number < request.total_steps,
-                }
-
-                # Add CLAI Agent's analysis to step 1
-                if request.step_number == 1:
-                    response_data["agent_analysis"] = {
-                        "initial_analysis": request.step,
-                        "findings": request.findings,
-                    }
-                    response_data["status"] = "analysis_and_first_model_consulted"
-
-                # Check if this is the final step
-                if request.step_number == request.total_steps:
-                    response_data["status"] = "consensus_workflow_complete"
-                    response_data["consensus_complete"] = True
-                    response_data["complete_consensus"] = {
-                        "initial_prompt": self.original_proposal if self.original_proposal else self.initial_prompt,
-                        "models_consulted": [
-                            f"{m['model']}:{m.get('stance', 'neutral')}" for m in self.accumulated_responses
-                        ],
-                        "total_responses": len(self.accumulated_responses),
-                        "consensus_confidence": "high",
-                    }
-                    response_data["next_steps"] = (
-                        "CONSENSUS GATHERING IS COMPLETE. Synthesize all perspectives and present:\n"
-                        "1. Key points of AGREEMENT across models\n"
-                        "2. Key points of DISAGREEMENT and why they differ\n"
-                        "3. Your final consolidated recommendation\n"
-                        "4. Specific, actionable next steps for implementation\n"
-                        "5. Critical risks or concerns that must be addressed"
+        async def consult_one(index: int, model_config: dict[str, Any]) -> dict[str, Any]:
+            async with semaphore:
+                manager.mark_model_running(task_id, index)
+                try:
+                    result = await asyncio.to_thread(
+                        self._consult_model_sync,
+                        model_config,
+                        request,
+                        original_proposal,
                     )
-                else:
-                    response_data["next_steps"] = (
-                        f"Model {model_response['model']} has provided its {model_response.get('stance', 'neutral')} "
-                        f"perspective. Please analyze this response and call {self.get_name()} again with:\n"
-                        f"- step_number: {request.step_number + 1}\n"
-                        f"- findings: Summarize key points from this model's response"
-                    )
+                except Exception as exc:
+                    logger.exception("Unexpected error consulting model %s", model_config)
+                    result = {
+                        "model": model_config.get("model", "unknown"),
+                        "stance": model_config.get("stance", "neutral"),
+                        "status": "error",
+                        "error": str(exc),
+                    }
+                model_status = "completed" if result.get("status") == "success" else "error"
+                manager.mark_model_finished(task_id, index, model_status)
+                return result
 
-                # Add continuation information and workflow customization
-                response_data = self.customize_workflow_response(response_data, request)
+        responses = await asyncio.gather(
+            *(consult_one(index, model_config) for index, model_config in enumerate(models))
+        )
+        response_data = self._build_parallel_response(
+            request=request,
+            original_proposal=original_proposal,
+            responses=responses,
+            continuation_id=continuation_id,
+        )
+        self._store_parallel_result(continuation_id, response_data, request, responses)
+        continuation_offer = self._build_continuation_offer(continuation_id)
+        if continuation_offer:
+            response_data["continuation_offer"] = continuation_offer
+        return response_data
 
-                # Ensure consensus-specific metadata is attached
-                self._add_workflow_metadata(response_data, arguments)
+    def _build_parallel_response(
+        self,
+        *,
+        request: ConsensusRequest,
+        original_proposal: str,
+        responses: list[dict[str, Any]],
+        continuation_id: str,
+    ) -> dict[str, Any]:
+        """Build the synthesis-ready response shared by sync and background completion paths."""
+        successful_count = sum(response.get("status") == "success" for response in responses)
+        failed_count = len(responses) - successful_count
+        status = "consensus_workflow_complete" if successful_count else "consensus_failed"
+        confidence = "high" if successful_count >= 2 else "partial"
+        model_labels = [
+            f"{response.get('model', 'unknown')}:{response.get('stance', 'neutral')}" for response in responses
+        ]
 
-                if continuation_id:
-                    self.store_conversation_turn(continuation_id, response_data, request)
-                    continuation_offer = self._build_continuation_offer(continuation_id)
-                    if continuation_offer:
-                        response_data["continuation_offer"] = continuation_offer
+        return {
+            "status": status,
+            "step_number": 1,
+            "total_steps": 1,
+            "consensus_complete": True,
+            "next_step_required": False,
+            "current_model_index": len(responses),
+            "total_models": len(responses),
+            "successful_responses": successful_count,
+            "failed_responses": failed_count,
+            "model_responses": responses,
+            "accumulated_responses": responses,
+            "agent_analysis": {
+                "initial_analysis": request.step,
+                "findings": request.findings,
+            },
+            "complete_consensus": {
+                "initial_prompt": original_proposal,
+                "models_consulted": model_labels,
+                "total_responses": len(responses),
+                "consensus_confidence": confidence,
+            },
+            "continuation_id": continuation_id,
+            "metadata": {
+                "tool_name": self.get_name(),
+                "workflow_type": "parallel_multi_model_consensus",
+                "models_consulted": model_labels,
+                "total_models": len(responses),
+            },
+            "next_steps": (
+                "Consensus 信息收集已完成，请综合全部观点并输出：\n"
+                "1. 各模型的主要共识\n"
+                "2. 各模型的主要分歧及原因\n"
+                "3. 最终综合建议\n"
+                "4. 具体、可执行的实施步骤\n"
+                "5. 必须处理的关键风险或疑虑"
+            ),
+        }
 
-                return [TextContent(type="text", text=json.dumps(response_data, indent=2, ensure_ascii=False))]
-
-        # Otherwise, use standard workflow execution
-        return await super().execute_workflow(arguments)
+    def _store_parallel_result(
+        self,
+        continuation_id: str,
+        response_data: dict[str, Any],
+        request: ConsensusRequest,
+        responses: list[dict[str, Any]],
+    ) -> None:
+        """Persist one completed consensus turn without shared workflow instance state."""
+        add_turn(
+            thread_id=continuation_id,
+            role="assistant",
+            content=json.dumps(response_data, ensure_ascii=False),
+            files=list(request.relevant_files or []),
+            images=list(request.images or []),
+            tool_name=self.get_name(),
+            model_name="consensus",
+            model_metadata={
+                "workflow_type": "parallel_multi_model_consensus",
+                "individual_responses": responses,
+            },
+        )
 
     def _build_continuation_offer(self, continuation_id: str) -> dict[str, Any] | None:
         """Create a continuation offer without exposing prior model responses."""
@@ -557,9 +569,9 @@ of the evidence, even when it strongly points in one direction.""",
 
             # Provide a neutral note specific to consensus workflow
             note = (
-                f"Consensus workflow can continue for {remaining_turns} more exchanges."
+                f"Consensus 工作流还可继续 {remaining_turns} 轮对话。"
                 if remaining_turns > 0
-                else "Consensus workflow continuation limit reached."
+                else "Consensus 工作流已达到对话轮数上限。"
             )
 
             continuation_offer = ContinuationOffer(
@@ -571,50 +583,45 @@ of the evidence, even when it strongly points in one direction.""",
         except Exception:
             return None
 
-    async def _consult_model(self, model_config: dict, request) -> dict:
-        """Consult a single model and return its response."""
+    def _consult_model_sync(
+        self,
+        model_config: dict[str, Any],
+        request: ConsensusRequest,
+        original_proposal: str,
+    ) -> dict[str, Any]:
+        """Consult one blinded model synchronously inside a worker thread."""
         try:
-            # Import and create ModelContext once at the beginning
             from utils.model_context import ModelContext
 
-            # Get the provider for this model
             model_name = model_config["model"]
-            provider = self.get_model_provider(model_name)
-
-            # Create model context once and reuse for both file processing and temperature validation
+            with _PROVIDER_INITIALIZATION_LOCK:
+                provider = self.get_model_provider(model_name)
+                if getattr(provider, "_client", object()) is None:
+                    getattr(provider, "client", None)
             model_context = ModelContext(model_name=model_name)
 
-            # Prepare the prompt with any relevant files
-            # Use continuation_id=None for blinded consensus - each model should only see
-            # original prompt + files, not conversation history or other model responses
-            # CRITICAL: Use the original proposal from step 1, NOT what's in request.step for steps 2+!
-            # Steps 2+ contain summaries/notes that must NEVER be sent to other models
-            prompt = self.original_proposal if self.original_proposal else self.initial_prompt
+            prompt = original_proposal
             if request.relevant_files:
                 file_content, _ = self._prepare_file_content_for_prompt(
-                    request.relevant_files,
-                    None,  # Use None instead of request.continuation_id for blinded consensus
+                    list(request.relevant_files),
+                    None,
                     "Context files",
+                    arguments={"_remaining_tokens": None},
                     model_context=model_context,
                 )
                 if file_content:
                     prompt = f"{prompt}\n\n=== CONTEXT FILES ===\n{file_content}\n=== END CONTEXT ==="
 
-            # Get stance-specific system prompt
             stance = model_config.get("stance", "neutral")
             stance_prompt = model_config.get("stance_prompt")
             system_prompt = self._get_stance_enhanced_prompt(stance, stance_prompt)
-
-            # Validate temperature against model constraints (respects supports_temperature)
             validated_temperature, temp_warnings = self.validate_and_correct_temperature(
                 self.get_default_temperature(), model_context
             )
 
-            # Log any temperature corrections
             for warning in temp_warnings:
                 logger.warning(warning)
 
-            # Call the model with validated temperature
             response = provider.generate_content(
                 prompt=prompt,
                 model_name=model_name,
@@ -635,14 +642,24 @@ of the evidence, even when it strongly points in one direction.""",
                 },
             }
 
-        except Exception as e:
+        except Exception as exc:
             logger.exception("Error consulting model %s", model_config)
             return {
                 "model": model_config.get("model", "unknown"),
                 "stance": model_config.get("stance", "neutral"),
                 "status": "error",
-                "error": str(e),
+                "error": str(exc),
             }
+
+    async def _consult_model(
+        self,
+        model_config: dict[str, Any],
+        request: ConsensusRequest,
+        original_proposal: str | None = None,
+    ) -> dict[str, Any]:
+        """Compatibility wrapper for callers that test a single consultation."""
+        proposal = original_proposal or request.step
+        return await asyncio.to_thread(self._consult_model_sync, model_config, request, proposal)
 
     def _get_stance_enhanced_prompt(self, stance: str, custom_stance_prompt: str | None = None) -> str:
         """Get the system prompt with stance injection."""
@@ -720,109 +737,6 @@ of the evidence, even when it strongly points in one direction.""",
 
         stance_prompt = stance_prompts.get(stance, stance_prompts["neutral"])
         return base_prompt.replace("{stance_prompt}", stance_prompt)
-
-    def customize_workflow_response(self, response_data: dict, request) -> dict:
-        """Customize response for consensus workflow."""
-        # Store model responses in the response for tracking
-        if self.accumulated_responses:
-            response_data["accumulated_responses"] = self.accumulated_responses
-
-        # Add consensus-specific fields
-        if request.step_number == 1:
-            response_data["consensus_workflow_status"] = "initial_analysis_complete"
-        elif request.step_number < request.total_steps - 1:
-            response_data["consensus_workflow_status"] = "consulting_models"
-        else:
-            response_data["consensus_workflow_status"] = "ready_for_synthesis"
-
-        # Customize metadata for consensus workflow
-        self._customize_consensus_metadata(response_data, request)
-
-        return response_data
-
-    def _customize_consensus_metadata(self, response_data: dict, request) -> None:
-        """
-        Customize metadata for consensus workflow to accurately reflect multi-model nature.
-
-        The default workflow metadata shows the model running Agent's analysis steps,
-        but consensus is a multi-model tool that consults different models. We need
-        to provide accurate metadata that reflects this.
-        """
-        if "metadata" not in response_data:
-            response_data["metadata"] = {}
-
-        metadata = response_data["metadata"]
-
-        # Always preserve tool_name
-        metadata["tool_name"] = self.get_name()
-
-        if request.step_number == request.total_steps:
-            # Final step - show comprehensive consensus metadata
-            models_consulted = []
-            if self.models_to_consult:
-                models_consulted = [f"{m['model']}:{m.get('stance', 'neutral')}" for m in self.models_to_consult]
-
-            metadata.update(
-                {
-                    "workflow_type": "multi_model_consensus",
-                    "models_consulted": models_consulted,
-                    "consensus_complete": True,
-                    "total_models": len(self.models_to_consult) if self.models_to_consult else 0,
-                }
-            )
-
-            # Remove the misleading single model metadata
-            metadata.pop("model_used", None)
-            metadata.pop("provider_used", None)
-
-        else:
-            # Intermediate steps - show consensus workflow in progress
-            models_to_consult = []
-            if self.models_to_consult:
-                models_to_consult = [f"{m['model']}:{m.get('stance', 'neutral')}" for m in self.models_to_consult]
-
-            metadata.update(
-                {
-                    "workflow_type": "multi_model_consensus",
-                    "models_to_consult": models_to_consult,
-                    "consultation_step": request.step_number,
-                    "total_consultation_steps": request.total_steps,
-                }
-            )
-
-            # Remove the misleading single model metadata that shows Agent's execution model
-            # instead of the models being consulted
-            metadata.pop("model_used", None)
-            metadata.pop("provider_used", None)
-
-    def _add_workflow_metadata(self, response_data: dict, arguments: dict[str, Any]) -> None:
-        """
-        Override workflow metadata addition for consensus tool.
-
-        The consensus tool doesn't use single model metadata because it's a multi-model
-        workflow. Instead, we provide consensus-specific metadata that accurately
-        reflects the models being consulted.
-        """
-        # Initialize metadata if not present
-        if "metadata" not in response_data:
-            response_data["metadata"] = {}
-
-        # Add basic tool metadata
-        response_data["metadata"]["tool_name"] = self.get_name()
-
-        # The consensus-specific metadata is already added by _customize_consensus_metadata
-        # which is called from customize_workflow_response. We don't add the standard
-        # single-model metadata (model_used, provider_used) because it's misleading
-        # for a multi-model consensus workflow.
-
-        logger.debug(
-            f"[CONSENSUS_METADATA] {self.get_name()}: Using consensus-specific metadata instead of single-model metadata"
-        )
-
-    def store_initial_issue(self, step_description: str):
-        """Store initial prompt for model consultations."""
-        self.original_proposal = step_description
-        self.initial_prompt = step_description  # Keep for backward compatibility
 
     # Required abstract methods from BaseTool
     def get_request_model(self):

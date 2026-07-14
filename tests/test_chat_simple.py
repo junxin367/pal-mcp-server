@@ -5,15 +5,23 @@ This module contains unit tests to ensure that the Chat tool
 (now using SimpleTool architecture) maintains proper functionality.
 """
 
+import asyncio
 import json
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from mcp.types import TextContent
 
+from providers.custom import CustomProvider
+from providers.openai_compatible import OpenAICompatibleProvider
 from providers.shared import ModelCapabilities, ModelResponse, ProviderType, RangeTemperatureConstraint
 from tools.chat import ChatRequest, ChatTool
+from tools.chat_status import ChatStatusTool
 from tools.shared.exceptions import ToolExecutionError
+from utils.chat_tasks import ChatTaskManager
 
 
 class TestChatTool:
@@ -50,6 +58,7 @@ class TestChatTool:
         assert "absolute_file_paths" in properties
         assert "images" in properties
         assert "working_directory_absolute_path" in properties
+        assert properties["thinking_mode"]["enum"] == ["medium", "high", "xhigh", "max"]
 
     def test_request_model_validation(self):
         """Test that the request model validates correctly"""
@@ -264,7 +273,7 @@ class TestChatTool:
         ("request_thinking_mode", "expected_effective_mode"),
         [
             (None, "medium"),
-            ("low", "low"),
+            ("xhigh", "xhigh"),
         ],
     )
     async def test_execute_preserves_requested_thinking_mode(
@@ -368,6 +377,23 @@ class TestChatRequestModel:
         assert request.absolute_file_paths == []  # Should default to empty list
         assert request.images == []  # Should default to empty list
 
+    def test_thinking_mode_validation(self):
+        """Chat requests should accept only the MCP-exposed reasoning levels."""
+        request = ChatRequest(
+            prompt="Test",
+            working_directory_absolute_path="/tmp",
+            thinking_mode="xhigh",
+        )
+        assert request.thinking_mode == "xhigh"
+
+        for removed_mode in ("minimal", "low"):
+            with pytest.raises(ValueError, match="thinking_mode must be one of"):
+                ChatRequest(
+                    prompt="Test",
+                    working_directory_absolute_path="/tmp",
+                    thinking_mode=removed_mode,
+                )
+
     def test_inheritance(self):
         """Test that ChatRequest properly inherits from ToolRequest"""
         from tools.shared.base_models import ToolRequest
@@ -381,6 +407,319 @@ class TestChatRequestModel:
         assert hasattr(request, "thinking_mode")
         assert hasattr(request, "continuation_id")
         assert hasattr(request, "images")  # From base model too
+
+
+class TestChatBackgroundFallback:
+    """Long-running Chat requests should fall back to process-local background tasks."""
+
+    @staticmethod
+    def _patch_task_manager(monkeypatch, manager: ChatTaskManager) -> None:
+        monkeypatch.setattr("tools.chat.get_chat_task_manager", lambda: manager)
+        monkeypatch.setattr("tools.chat_status.get_chat_task_manager", lambda: manager)
+
+    @pytest.mark.asyncio
+    async def test_fast_chat_preserves_original_response(self, monkeypatch):
+        manager = ChatTaskManager()
+        self._patch_task_manager(monkeypatch, manager)
+        expected = [TextContent(type="text", text='{"status":"success","content":"done"}')]
+
+        async def execute_once(_self, _arguments):
+            return expected
+
+        monkeypatch.setattr(ChatTool, "_execute_once", execute_once)
+        monkeypatch.setattr("tools.chat.CHAT_SYNC_WAIT_SECONDS", 0.1)
+        monkeypatch.setattr("tools.chat.CHAT_BACKGROUND_WAIT_SECONDS", 0.2)
+
+        result = await ChatTool().execute({"model": "test-model"})
+
+        assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_slow_chat_returns_task_id_and_status_returns_original_result(self, monkeypatch):
+        manager = ChatTaskManager()
+        self._patch_task_manager(monkeypatch, manager)
+        release = asyncio.Event()
+        expected = [TextContent(type="text", text='{"status":"success","content":"background done"}')]
+
+        async def execute_once(_self, _arguments):
+            await release.wait()
+            return expected
+
+        monkeypatch.setattr(ChatTool, "_execute_once", execute_once)
+        monkeypatch.setattr("tools.chat.CHAT_SYNC_WAIT_SECONDS", 0.01)
+        monkeypatch.setattr("tools.chat.CHAT_BACKGROUND_WAIT_SECONDS", 1.0)
+        execution_lease = await manager.acquire_execution_lease("continuation:test")
+
+        initial = await ChatTool().execute(
+            {
+                "model": "slow-model",
+                "_chat_execution_lease": execution_lease,
+            }
+        )
+        payload = json.loads(initial[0].text)
+
+        assert payload["status"] == "chat_in_progress"
+        assert payload["model"] == "slow-model"
+        assert payload["total_timeout_seconds"] == 1.01
+        assert "chat_status" in payload["next_steps"]
+
+        competing_lease, active_operation = await manager.try_acquire_execution_lease(
+            "continuation:test",
+            owner_tool="chat",
+        )
+        assert competing_lease is None
+        assert active_operation["task_id"] == payload["task_id"]
+
+        pending = await ChatStatusTool().execute({"task_id": payload["task_id"]})
+        assert json.loads(pending[0].text)["status"] == "pending"
+
+        next_lease_waiter = asyncio.create_task(manager.acquire_execution_lease("continuation:test"))
+        await asyncio.sleep(0)
+        assert not next_lease_waiter.done()
+
+        release.set()
+        await manager.wait(payload["task_id"], 1)
+        next_lease = await asyncio.wait_for(next_lease_waiter, timeout=1)
+        next_lease.release()
+
+        completed = await ChatStatusTool().execute({"task_id": payload["task_id"]})
+        assert completed == expected
+
+    @pytest.mark.asyncio
+    async def test_chat_total_timeout_is_reported_as_failed(self, monkeypatch):
+        manager = ChatTaskManager()
+        self._patch_task_manager(monkeypatch, manager)
+
+        async def execute_once(_self, _arguments):
+            await asyncio.sleep(1)
+            return [TextContent(type="text", text="late")]
+
+        monkeypatch.setattr(ChatTool, "_execute_once", execute_once)
+        monkeypatch.setattr("tools.chat.CHAT_SYNC_WAIT_SECONDS", 0.01)
+        monkeypatch.setattr("tools.chat.CHAT_BACKGROUND_WAIT_SECONDS", 0.01)
+
+        initial = await ChatTool().execute({"model": "slow-model"})
+        task_id = json.loads(initial[0].text)["task_id"]
+        await manager.wait(task_id, 1)
+
+        failed = await ChatStatusTool().execute({"task_id": task_id})
+        payload = json.loads(failed[0].text)
+        assert payload["status"] == "failed"
+        assert "总执行时间超过" in payload["error"]
+        assert manager.get_exception(task_id) is None
+
+    @pytest.mark.asyncio
+    async def test_chat_status_reports_unknown_task(self, monkeypatch):
+        manager = ChatTaskManager()
+        self._patch_task_manager(monkeypatch, manager)
+
+        result = await ChatStatusTool().execute({"task_id": "missing"})
+        payload = json.loads(result[0].text)
+
+        assert payload["status"] == "not_found"
+
+    @pytest.mark.asyncio
+    async def test_fast_chat_preserves_original_exception(self, monkeypatch):
+        manager = ChatTaskManager()
+        self._patch_task_manager(monkeypatch, manager)
+        expected = ToolExecutionError('{"status":"error","content":"boom"}')
+
+        async def execute_once(_self, _arguments):
+            raise expected
+
+        monkeypatch.setattr(ChatTool, "_execute_once", execute_once)
+        monkeypatch.setattr("tools.chat.CHAT_SYNC_WAIT_SECONDS", 0.1)
+        monkeypatch.setattr("tools.chat.CHAT_BACKGROUND_WAIT_SECONDS", 0.2)
+
+        with pytest.raises(ToolExecutionError) as exc_info:
+            await ChatTool().execute({"model": "test-model"})
+
+        assert exc_info.value is expected
+
+    @pytest.mark.asyncio
+    async def test_completed_chat_task_expires_after_ttl(self):
+        now = [100.0]
+        manager = ChatTaskManager(ttl_seconds=10, clock=lambda: now[0])
+
+        async def worker():
+            return [TextContent(type="text", text="done")]
+
+        task_id = manager.create_record("test-model")
+        manager.start(task_id, worker())
+        await manager.wait(task_id, 1)
+        assert manager.get_snapshot(task_id)["status"] == "completed"
+
+        now[0] = 111.0
+        assert manager.get_snapshot(task_id)["status"] == "not_found"
+
+    @pytest.mark.asyncio
+    async def test_provider_call_runs_outside_event_loop_thread(self):
+        event_loop_thread = threading.get_ident()
+        provider = Mock()
+        captured_kwargs = {}
+
+        def generate_content(**kwargs):
+            captured_kwargs.update(kwargs)
+            return threading.get_ident()
+
+        provider.generate_content.side_effect = generate_content
+        tool = ChatTool()
+        tool._request_deadline_monotonic = 123.0
+
+        provider_thread = await tool._generate_model_response(provider, prompt="test")
+
+        assert provider_thread != event_loop_thread
+        assert captured_kwargs["request_deadline_monotonic"] == 123.0
+
+    @pytest.mark.asyncio
+    async def test_execution_lease_serializes_same_continuation(self):
+        manager = ChatTaskManager()
+        first = await manager.acquire_execution_lease("continuation:test")
+        second_waiter = asyncio.create_task(manager.acquire_execution_lease("continuation:test"))
+        await asyncio.sleep(0)
+
+        assert not second_waiter.done()
+
+        first.release()
+        second = await asyncio.wait_for(second_waiter, timeout=1)
+        second.release()
+
+    @pytest.mark.asyncio
+    async def test_server_serializes_chat_before_continuation_reconstruction(self, monkeypatch):
+        import server
+
+        manager = ChatTaskManager()
+        release_background = asyncio.Event()
+        calls = []
+
+        async def fake_impl(name, arguments):
+            calls.append(arguments["prompt"])
+            lease = arguments["_chat_execution_lease"]
+            if arguments["prompt"] == "first":
+                lease.transfer()
+
+                async def release_later():
+                    await release_background.wait()
+                    lease.release()
+
+                asyncio.create_task(release_later())
+            return [TextContent(type="text", text=arguments["prompt"])]
+
+        monkeypatch.setattr("utils.chat_tasks.get_chat_task_manager", lambda: manager)
+        monkeypatch.setattr(server, "_handle_call_tool_impl", fake_impl)
+
+        first = await server.handle_call_tool(
+            "chat",
+            {"prompt": "first", "continuation_id": "thread-1"},
+        )
+        assert first[0].text == "first"
+
+        second = await server.handle_call_tool(
+            "chat",
+            {"prompt": "second", "continuation_id": "thread-1"},
+        )
+        assert calls == ["first"]
+        busy_payload = json.loads(second[0].text)
+        assert busy_payload["status"] == "conversation_in_progress"
+        assert busy_payload["active_tool"] == "chat"
+
+        release_background.set()
+        await asyncio.sleep(0)
+
+        third = await server.handle_call_tool(
+            "chat",
+            {"prompt": "third", "continuation_id": "thread-1"},
+        )
+        assert third[0].text == "third"
+        assert calls == ["first", "third"]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_sync_wait_discards_unexposed_task_record(self, monkeypatch):
+        manager = ChatTaskManager()
+        self._patch_task_manager(monkeypatch, manager)
+        release = asyncio.Event()
+
+        async def execute_once(_self, _arguments):
+            await release.wait()
+            return [TextContent(type="text", text="done")]
+
+        monkeypatch.setattr(ChatTool, "_execute_once", execute_once)
+        monkeypatch.setattr("tools.chat.CHAT_SYNC_WAIT_SECONDS", 10.0)
+        monkeypatch.setattr("tools.chat.CHAT_BACKGROUND_WAIT_SECONDS", 1.0)
+
+        call = asyncio.create_task(ChatTool().execute({"model": "slow-model"}))
+        await asyncio.sleep(0)
+        call.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await call
+
+        assert manager._records == {}
+        release.set()
+
+    def test_worker_clone_preserves_instance_overrides(self):
+        tool = ChatTool()
+        override = AsyncMock(return_value="custom prompt")
+        tool.prepare_prompt = override
+        tool._actually_processed_files = ["stale.py"]
+
+        worker = tool._create_worker()
+
+        assert worker.prepare_prompt is override
+        assert not hasattr(worker, "_actually_processed_files")
+
+    def test_openai_compatible_request_uses_remaining_deadline(self):
+        deadline = time.monotonic() + 10
+
+        request_params = OpenAICompatibleProvider._with_request_deadline(
+            {"model": "test-model"},
+            deadline,
+        )
+
+        assert request_params["model"] == "test-model"
+        assert 0 < request_params["timeout"] <= 10
+
+    def test_openai_compatible_request_rejects_expired_deadline(self):
+        with pytest.raises(TimeoutError, match="deadline exceeded"):
+            OpenAICompatibleProvider._with_request_deadline(
+                {"model": "test-model"},
+                time.monotonic() - 1,
+            )
+
+    def test_openai_compatible_deadline_disables_sdk_internal_retries(self):
+        provider = object.__new__(CustomProvider)
+        provider._client = Mock()
+        bounded_client = Mock()
+        provider._client.with_options.return_value = bounded_client
+
+        result = provider._client_without_internal_retries(time.monotonic() + 10)
+
+        assert result is bounded_client
+        provider._client.with_options.assert_called_once_with(max_retries=0)
+
+    def test_chat_status_is_registered_without_model_requirement(self):
+        from server import TOOLS
+
+        assert "chat_status" in TOOLS
+        assert TOOLS["chat_status"].requires_model() is False
+        assert TOOLS["chat_status"].get_annotations() == {"readOnlyHint": True}
+
+    def test_chat_status_follows_chat_filtering(self):
+        from server import apply_tool_filter
+
+        tools = {
+            "chat": object(),
+            "chat_status": object(),
+            "consensus": object(),
+        }
+
+        status_only_disabled = apply_tool_filter(tools, {"chat_status"})
+        assert "chat" in status_only_disabled
+        assert "chat_status" in status_only_disabled
+
+        chat_disabled = apply_tool_filter(tools, {"chat"})
+        assert "chat" not in chat_disabled
+        assert "chat_status" not in chat_disabled
 
 
 if __name__ == "__main__":

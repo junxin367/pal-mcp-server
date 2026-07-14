@@ -9,7 +9,7 @@ import pytest
 from tools.analyze import AnalyzeTool
 from tools.codereview import CodeReviewTool
 from tools.debug import DebugIssueTool
-from tools.thinkdeep import ThinkDeepTool
+from tools.thinkdeep import ThinkDeepTool, ThinkDeepWorkflowRequest
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +21,31 @@ def setup_test_env():
 
 class TestThinkingModes:
     """Test thinking modes across all tools"""
+
+    def test_exposed_thinking_modes(self):
+        """Tools that expose thinking mode should use the unified MCP levels."""
+        expected = ["medium", "high", "xhigh", "max"]
+
+        for tool in [ThinkDeepTool(), AnalyzeTool(), CodeReviewTool(), DebugIssueTool()]:
+            schema = tool.get_input_schema()
+            thinking_mode = schema["properties"].get("thinking_mode")
+            if thinking_mode is not None:
+                assert thinking_mode["enum"] == expected
+
+    def test_workflow_request_rejects_removed_thinking_modes(self):
+        """Workflow request models should enforce the same MCP contract."""
+        arguments = {
+            "step": "test",
+            "step_number": 1,
+            "total_steps": 1,
+            "next_step_required": False,
+            "findings": "test",
+        }
+
+        assert ThinkDeepWorkflowRequest(**arguments, thinking_mode="xhigh").thinking_mode == "xhigh"
+        for removed_mode in ("minimal", "low"):
+            with pytest.raises(ValueError, match="thinking_mode must be one of"):
+                ThinkDeepWorkflowRequest(**arguments, thinking_mode=removed_mode)
 
     @patch("config.DEFAULT_THINKING_MODE_THINKDEEP", "high")
     def test_default_thinking_modes(self):
@@ -38,8 +63,8 @@ class TestThinkingModes:
             ), f"{tool.__class__.__name__} should default to {expected_default}"
 
     @pytest.mark.asyncio
-    async def test_thinking_mode_minimal(self):
-        """Test minimal thinking mode with real provider resolution"""
+    async def test_thinking_mode_xhigh_analyze(self):
+        """Test xhigh thinking mode with real provider resolution for analyze."""
         import importlib
         import os
 
@@ -51,7 +76,7 @@ class TestThinkingModes:
 
         try:
             # Set up environment for OpenAI provider (which supports thinking mode)
-            os.environ["OPENAI_API_KEY"] = "sk-test-key-minimal-thinking-test-not-real"
+            os.environ["OPENAI_API_KEY"] = "sk-test-key-xhigh-thinking-test-not-real"
             os.environ["DEFAULT_MODEL"] = "o3-mini"  # Use a model that supports thinking
 
             # Clear other provider keys to isolate to OpenAI
@@ -77,7 +102,7 @@ class TestThinkingModes:
                         "absolute_file_paths": ["/absolute/path/test.py"],
                         "prompt": "What is this?",
                         "model": "o3-mini",
-                        "thinking_mode": "minimal",
+                        "thinking_mode": "xhigh",
                     }
                 )
                 # If we get here, great! The provider resolution worked
@@ -121,8 +146,8 @@ class TestThinkingModes:
             ModelProviderRegistry._instance = None
 
     @pytest.mark.asyncio
-    async def test_thinking_mode_low(self):
-        """Test low thinking mode with real provider resolution"""
+    async def test_thinking_mode_xhigh_codereview(self):
+        """Test xhigh thinking mode with real provider resolution for code review."""
         import importlib
         import os
 
@@ -134,7 +159,7 @@ class TestThinkingModes:
 
         try:
             # Set up environment for OpenAI provider (which supports thinking mode)
-            os.environ["OPENAI_API_KEY"] = "sk-test-key-low-thinking-test-not-real"
+            os.environ["OPENAI_API_KEY"] = "sk-test-key-xhigh-thinking-test-not-real"
             os.environ["DEFAULT_MODEL"] = "o3-mini"
 
             # Clear other provider keys
@@ -156,7 +181,7 @@ class TestThinkingModes:
                 result = await tool.execute(
                     {
                         "absolute_file_paths": ["/absolute/path/test.py"],
-                        "thinking_mode": "low",
+                        "thinking_mode": "xhigh",
                         "prompt": "Test code review for validation purposes",
                         "model": "o3-mini",
                     }

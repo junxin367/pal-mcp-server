@@ -462,7 +462,7 @@ Versions 0.2.1 and newer currently ignore values above ~60 seconds for some tran
 
 **Slow responses:**
 - Use faster models: `flash` instead of `pro`  
-- Lower thinking modes: `minimal` or `low` instead of `high`
+- Use `medium` instead of `high`, `xhigh`, or `max`
 - Restrict model access to prevent expensive model selection
 
 **Token limit errors:**
