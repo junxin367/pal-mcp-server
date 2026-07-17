@@ -59,8 +59,8 @@ Chat remains synchronous by default. If a request is still running after 240 sec
   "status": "chat_in_progress",
   "task_id": "f2d87b8d-...",
   "model": "gpt-5.6-sol",
-  "background_wait_seconds": 360,
-  "total_timeout_seconds": 600
+  "background_wait_seconds": 660,
+  "total_timeout_seconds": 900
 }
 ```
 
@@ -77,7 +77,7 @@ Query it without sending the Chat prompt again:
 
 While the task is running, `chat_status` returns `pending`. When it completes, `chat_status` returns the original Chat response directly. Failed and unknown tasks return `failed` and `not_found` respectively.
 
-Background tasks are process-local. Restarting PAL invalidates unfinished task IDs. The default PAL result deadline is 600 seconds, and terminal task state remains queryable for the configured retention period. OpenAI-compatible providers receive the same request deadline and disable SDK-internal retries so the configured Custom Provider does not continue beyond PAL's retry window. Provider SDKs without request-level cancellation may still finish an in-flight network operation after PAL has marked the task failed.
+Background tasks are process-local. Restarting PAL invalidates unfinished task IDs. The default PAL result deadline is 900 seconds, and terminal task state remains queryable for the configured retention period. OpenAI-compatible providers receive the same request deadline and disable SDK-internal retries so the configured Custom Provider does not continue beyond PAL's retry window. Provider SDKs without request-level cancellation may still finish an in-flight network operation after PAL has marked the task failed.
 
 PAL permits only one active request per `continuation_id`. A concurrent request using the same continuation returns `conversation_in_progress` immediately instead of waiting outside the 240-second Chat fallback window. If the active Chat has already created a background task, the response includes its `task_id`.
 
@@ -85,7 +85,7 @@ Optional environment variables:
 
 ```dotenv
 CHAT_SYNC_WAIT_SECONDS=240
-CHAT_BACKGROUND_WAIT_SECONDS=360
+CHAT_BACKGROUND_WAIT_SECONDS=660
 CHAT_TASK_TTL_SECONDS=10800
 ```
 
